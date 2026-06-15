@@ -60,7 +60,7 @@ rule align_get_qry_fa:
 
         if len(input_tuples) == 1 and input_tuples[0][1] == 'fasta':
             os.makedirs(os.path.dirname(out_filename), exist_ok=True)
-            fa_path_list = pav3.pipeline.link_fasta(input_tuples[0][0], out_filename)
+            fa_path_list = pav3.pipeline.link_fasta(Path(input_tuples[0][0]).absolute(), out_filename)
 
         else:
             # Merge/write FASTA from multiple sources and/or GFA files

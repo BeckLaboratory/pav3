@@ -923,24 +923,32 @@ def get_rules_path(
 
 def get_pav_config_path(
         config_filename: Optional[str | Path] = None,
+        root_path: Optional[str | Path] = None,
 ) -> Path:
     """Locate the PAV configuration filename.
 
     :param config_filename: Path to the config file. If None, the default config file is used.
+    :param root_path: Root path to search for the config file. If None, the current directory
+        is used.
 
     :return: Path to the config file.
 
     :raises FileNotFoundError: If the specified configuration (`config_filename`) or default
         configuration file is not found.
     """
+    if root_path is None:
+        root_path = Path('.')
+    else:
+        root_path = Path(root_path)
+
     default_paths = (
-        Path('pav.json'),
-        Path('pav.json.txt'),
+        root_path / 'pav.json',
+        root_path / 'pav.json.txt',
     )
 
     deprecated_paths = (
-        Path('config.json'),
-        Path('config.json.txt'),
+        root_path / 'config.json',
+        root_path / 'config.json.txt',
     )
 
     if config_filename is not None:
@@ -989,15 +997,23 @@ def get_pav_config_path(
 
 def get_pav_asm_table_path(
         asm_table_path: Optional[str | Path] = None,
+        root_path: Optional[str | Path] = None,
 ) -> Path:
     """Get a path to the assembly table.
 
     :param asm_table_path: Table path, if specified.
+    :param root_path: Root path to search for the table file. If None, the current directory
+        is used.
 
     :return: Path to the assembly table.
 
     :raises FileNotFoundError: If the specified assembly table or default assembly table is not found.
     """
+
+    if root_path is None:
+        root_path = Path('.')
+    else:
+        root_path = Path(root_path)
 
     if asm_table_path is not None:
         asm_table_path = Path(asm_table_path)
@@ -1007,14 +1023,20 @@ def get_pav_asm_table_path(
 
         return asm_table_path
 
-    for asm_table_path in (
-        Path('assemblies.tsv'),
-        Path('assemblies.xlsx')
-    ):
+    default_paths = [
+        root_path / 'assemblies.tsv',
+        root_path / 'assemblies.xlsx',
+    ]
+
+    for asm_table_path in default_paths:
         if asm_table_path.is_file():
             return asm_table_path
 
-    raise FileNotFoundError('No assembly table file found (tried default "assemblies.tsv" and "assemblies.xlsx")')
+    default_path_str = ', '.join(
+        [f'"{str(p)}"' for p in default_paths]
+    )
+
+    raise FileNotFoundError(f'No assembly table file found (tried default paths: {default_path_str})')
 
 
 def get_pav_env_path(
