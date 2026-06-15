@@ -1,0 +1,222 @@
+#!/usr/bin/env bash
+
+# Build the PAV3 Docker image (both stages of the bundled Dockerfile).
+#
+# Runs correctly regardless of the current working directory: the PAV directory
+# is found relative to this script's location unless overridden with --dir.
+#
+# Usage:
+#   files/docker/build [options] [-- docker build args...]
+#
+# Options:
+#   -d, --dir DIR          PAV directory (resolved relative to CWD). Overrides
+#                          the location auto-detected from this script.
+#   -p, --pav-version VER  PAV version to build (e.g. 3.0.0.dev22). Defaults to
+#                          the newest wheel in <PAV_DIR>/dist.
+#   -f, --force            Rebuild even if an image for the version already exists.
+#   -L, --nolatest         Do not also tag the runtime image as "latest".
+#   -n, --pretend          Print the docker commands without running them.
+#   -v, --verbose          Print commands as they run; verbose docker output.
+#   -q, --quiet            Suppress per-step progress messages.
+#   -h, --help             Print this help and exit.
+#
+# Any unrecognized arguments, and anything after a literal "--", are passed
+# through to the underlying "docker build" commands.
+
+set -euo pipefail
+
+# Print the leading comment block (everything after the shebang up to the first
+# non-comment line) as help text.
+usage() {
+    awk 'NR==1 { next } /^#/ { started=1; sub(/^# ?/, ""); print; next } started { exit }' "$0"
+}
+
+err() {
+    printf 'error: %s\n' "$*" >&2
+    exit 1
+}
+
+
+### Resolve this script's directory (following symlinks) ###
+
+SCRIPT_SOURCE="${BASH_SOURCE[0]}"
+
+while [[ -h "$SCRIPT_SOURCE" ]]; do
+    dir="$(cd -P "$(dirname "$SCRIPT_SOURCE")" >/dev/null 2>&1 && pwd)"
+    SCRIPT_SOURCE="$(readlink "$SCRIPT_SOURCE")"
+    [[ "$SCRIPT_SOURCE" != /* ]] && SCRIPT_SOURCE="${dir}/${SCRIPT_SOURCE}"
+done
+
+SCRIPT_DIR="$(cd -P "$(dirname "$SCRIPT_SOURCE")" >/dev/null 2>&1 && pwd)"
+
+
+### Parse arguments ###
+
+DIR_ARG=""
+PAV_VERSION=""
+FORCE=""
+NOLATEST=""
+PRETEND=""
+VERBOSE=""
+QUIET=""
+EXTRA=()
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -d|--dir)
+            [[ $# -ge 2 ]] || err "$1 requires an argument"
+            DIR_ARG="$2"; shift 2 ;;
+        -p|--pav-version)
+            [[ $# -ge 2 ]] || err "$1 requires an argument"
+            PAV_VERSION="$2"; shift 2 ;;
+        -f|--force)    FORCE=1; shift ;;
+        -L|--nolatest) NOLATEST=1; shift ;;
+        -n|--pretend)  PRETEND=1; shift ;;
+        -v|--verbose)  VERBOSE=1; shift ;;
+        -q|--quiet)    QUIET=1; shift ;;
+        -h|--help)     usage; exit 0 ;;
+        --)           shift; EXTRA+=("$@"); break ;;
+        *)            EXTRA+=("$1"); shift ;;
+    esac
+done
+
+
+### Helpers ###
+
+# Print a progress message unless running quiet.
+progress() {
+    [[ -n "$QUIET" ]] || printf '==> %s\n' "$*"
+}
+
+# Run a command, echoing it first when verbose or pretending. Under --pretend
+# the command is printed but not executed.
+run() {
+    if [[ -n "$VERBOSE" || -n "$PRETEND" ]]; then
+        printf '+'; printf ' %q' "$@"; printf '\n'
+    fi
+    [[ -n "$PRETEND" ]] && return 0
+    "$@"
+}
+
+
+### Resolve the PAV directory ###
+
+if [[ -n "$DIR_ARG" ]]; then
+    # Resolve --dir relative to the current working directory.
+    PAV_DIR="$(cd "$DIR_ARG" 2>/dev/null && pwd)" \
+        || err "PAV directory not found (--dir): ${DIR_ARG}"
+else
+    # Resolve "../.." relative to this script (files/docker -> repo root).
+    PAV_DIR="$(cd "${SCRIPT_DIR}/../.." >/dev/null 2>&1 && pwd)" \
+        || err "Could not resolve PAV directory from script location: ${SCRIPT_DIR}"
+fi
+
+[[ -f "${PAV_DIR}/Dockerfile" ]] \
+    || err "No Dockerfile found in PAV directory: ${PAV_DIR}"
+
+DIST_DIR="${PAV_DIR}/dist"
+
+
+### Determine the PAV version ###
+
+if [[ -z "$PAV_VERSION" ]]; then
+    # Auto-detect the newest wheel.
+    shopt -s nullglob
+    wheels=("${DIST_DIR}"/pav3-*.whl)
+    shopt -u nullglob
+
+    [[ ${#wheels[@]} -gt 0 ]] \
+        || err "No PAV wheel files found in ${DIST_DIR}. Run \"uv build\" to generate one."
+
+    PAV_VERSION="$(ls "${DIST_DIR}"/pav3-*.whl | sort -V | tail -1 | sed -E 's/.*pav3-(.*)-py3.*/\1/')"
+
+    # The newest wheel must match the in-tree version, otherwise the wheel is
+    # stale relative to the source.
+    INIT_FILE="${PAV_DIR}/src/pav3/__init__.py"
+    SRC_VERSION="$(sed -nE "s/^__version__[[:space:]]*=[[:space:]]*['\"]([^'\"]+)['\"].*/\1/p" "$INIT_FILE" 2>/dev/null || true)"
+
+    if [[ "$PAV_VERSION" != "$SRC_VERSION" ]]; then
+        err "Latest wheel version (${PAV_VERSION}) does not match the source version (${SRC_VERSION:-not found}) in ${INIT_FILE}. Run \"uv build\" to build the latest wheel, or set the version explicitly with \"-p <version>\" to bypass this check."
+    fi
+else
+    # Verify the requested version has a wheel.
+    WHEEL_PATH="${DIST_DIR}/pav3-${PAV_VERSION}-py3-none-any.whl"
+    [[ -f "$WHEEL_PATH" ]] \
+        || err "No wheel file found for PAV version ${PAV_VERSION}. Expected: ${WHEEL_PATH}"
+fi
+
+IMAGE_TOOLS="pav3_tools:${PAV_VERSION}"
+IMAGE_PAV="pav3:${PAV_VERSION}"
+
+
+### Skip if the build already exists (unless forced) ###
+
+if [[ -z "$FORCE" ]] && docker image inspect "$IMAGE_PAV" >/dev/null 2>&1; then
+    err "Image ${IMAGE_PAV} already exists. Use -f/--force to rebuild."
+fi
+
+
+### Build ###
+
+# Common docker build args. PAV_VERSION is only meaningful to the pav3 stage,
+# so it is added to that build alone (avoids an "unused build arg" warning and
+# keeps it out of the tools stage cache key).
+COMMON_ARGS=()
+[[ -n "$VERBOSE" ]] && COMMON_ARGS+=(--progress=plain)
+
+# Runtime image tags: versioned, plus "latest" unless --nolatest.
+PAV_TAGS=(-t "${IMAGE_PAV}")
+[[ -z "$NOLATEST" ]] && PAV_TAGS+=(-t "pav3:latest")
+
+progress "PAV directory:  ${PAV_DIR}"
+progress "PAV version:    ${PAV_VERSION}"
+
+# Stage 1: external tools.
+#
+# Build without a tag and capture the resulting image ID. The tools stage does
+# not depend on PAV_VERSION, so an unchanged tool set is a full cache hit that
+# yields the same image ID as the previously-tagged tools image. We only add a
+# pav3_tools:<version> tag when the image is genuinely new (no existing
+# pav3_tools tag points at it). pav3:<version> conceptually uses the newest
+# pav3_tools tag at or below its version, so we do not need a tools tag per PAV
+# release.
+progress "Building tools stage"
+
+if [[ -n "$PRETEND" ]]; then
+    IIDFILE="(iidfile)"
+else
+    IIDFILE="$(mktemp)"
+    trap 'rm -f "$IIDFILE"' EXIT
+fi
+
+run docker build \
+    --target pav3_tools \
+    --iidfile "$IIDFILE" \
+    ${COMMON_ARGS[@]+"${COMMON_ARGS[@]}"} \
+    -f "${PAV_DIR}/Dockerfile" \
+    ${EXTRA[@]+"${EXTRA[@]}"} \
+    "${PAV_DIR}"
+
+if [[ -n "$PRETEND" ]]; then
+    progress "Would tag ${IMAGE_TOOLS} only if the tools image is newly built"
+    run docker tag "(tools-image-id)" "${IMAGE_TOOLS}"
+elif docker image inspect --format '{{range .RepoTags}}{{println .}}{{end}}' \
+        "$(cat "$IIDFILE")" 2>/dev/null | grep -q '^pav3_tools:'; then
+    progress "Tools image unchanged; keeping existing pav3_tools tag"
+else
+    progress "New tools image; tagging ${IMAGE_TOOLS}"
+    run docker tag "$(cat "$IIDFILE")" "${IMAGE_TOOLS}"
+fi
+
+# Stage 2: runtime image. Reuses cached tools layers from stage 1.
+progress "Building runtime stage: ${IMAGE_PAV}"
+run docker build \
+    --target pav3 \
+    "${PAV_TAGS[@]}" \
+    --build-arg "PAV_VERSION=${PAV_VERSION}" \
+    ${COMMON_ARGS[@]+"${COMMON_ARGS[@]}"} \
+    -f "${PAV_DIR}/Dockerfile" \
+    ${EXTRA[@]+"${EXTRA[@]}"} \
+    "${PAV_DIR}"
+
+progress "Done. Built ${IMAGE_PAV}"
