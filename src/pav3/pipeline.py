@@ -866,16 +866,25 @@ def link_fasta(
 
     # Link FASTA
     dest_fa_path.unlink(missing_ok=True)
-    dest_fa_path.symlink_to(source)
+    dest_fa_path.parent.mkdir(parents=True, exist_ok=True)
+
+    dest_fa_path.symlink_to(
+        resolve_relative(source, dest_fa_path)
+    )
 
     # Link indexes (if present)
     if source_is_indexed:
         dest_fai_path.unlink(missing_ok=True)
-        dest_fai_path.symlink_to(source_fai)
+
+        dest_fai_path.symlink_to(
+            resolve_relative(source_fai, dest_fai_path)
+        )
 
         if dest_gzi_path is not None:
             dest_gzi_path.unlink(missing_ok=True)
-            dest_gzi_path.symlink_to(source_gzi)
+            dest_gzi_path.symlink_to(
+                resolve_relative(source_gzi, dest_gzi_path)
+            )
 
     else:
         # Create indexes
@@ -885,6 +894,37 @@ def link_fasta(
     return [
         dest_fa_path, dest_fai_path
     ] + [dest_gzi_path] if dest_gzi_path is not None else []
+
+def resolve_relative(
+        source_path: str | Path,
+        dest_path: str | Path,
+) -> Path:
+    """Resolve a path relative to another path.
+
+    If both source and destination paths are relative, assume they hare relative to the current
+    working directory and return a relative path from the destination path to the source path.
+    This can be used to make symbolic links within a directory structure allowing the directories
+    to move locations without breaking absolute paths.
+
+    If either the source or the destination path is absolute, the absolute source path is
+    returned.
+
+    :param source_path: Source path.
+    :param dest_path: Destination path.
+
+    :returns: Resolved path.
+    """
+    source_path = Path(source_path)
+    dest_path = Path(dest_path)
+
+    if source_path.is_absolute():
+        return source_path
+
+    if dest_path.is_absolute():
+        return source_path.absolute()
+
+    # Return a path relative to the destination path
+    return source_path.relative_to(dest_path.parent, walk_up=True)
 
 
 def get_rules_path(
@@ -996,18 +1036,24 @@ def get_pav_config_path(
 
 
 def get_pav_asm_table_path(
-        asm_table_path: Optional[str | Path] = None,
-        root_path: Optional[str | Path] = None,
+        pav_config: Optional[dict] = None,
+        root_path: Optional[str | Path] = Path('.'),
 ) -> Path:
     """Get a path to the assembly table.
 
-    :param asm_table_path: Table path, if specified.
+    The assembly table path is read from the PAV configuration if it is specified there. If it is
+    not specified in the configuration, the default assembly table paths are searched. All paths
+    are relative to `root_path` (defaults to the current directory).
+
+    :param pav_config: PAV configuration, if specified. Reads the assembly table path from the
+        configuration if it is specified there.
     :param root_path: Root path to search for the table file. If None, the current directory
         is used.
 
     :return: Path to the assembly table.
 
-    :raises FileNotFoundError: If the specified assembly table or default assembly table is not found.
+    :raises FileNotFoundError: If the specified assembly table or default assembly table is not
+        found.
     """
 
     if root_path is None:
@@ -1015,11 +1061,14 @@ def get_pav_asm_table_path(
     else:
         root_path = Path(root_path)
 
-    if asm_table_path is not None:
-        asm_table_path = Path(asm_table_path)
+    if pav_config is not None and 'assembly_table' in pav_config:
+        asm_table_path = root_path / str(pav_config['assembly_table'])
 
         if not asm_table_path.is_file():
-            raise FileNotFoundError(f'Specified assembly table file not found or not a regular file: {asm_table_path}')
+            raise FileNotFoundError(
+                f'Assembly table file defined in the PAV configuration is not found '
+                f'or not a regular file: {asm_table_path}'
+            )
 
         return asm_table_path
 
@@ -1036,7 +1085,9 @@ def get_pav_asm_table_path(
         [f'"{str(p)}"' for p in default_paths]
     )
 
-    raise FileNotFoundError(f'No assembly table file found (tried default paths: {default_path_str})')
+    raise FileNotFoundError(
+        f'No assembly table file found (tried default paths: {default_path_str})'
+    )
 
 
 def get_pav_env_path(
@@ -1053,7 +1104,9 @@ def get_pav_env_path(
 
     if env_path is not None:
         if not env_path.is_file():
-            raise FileNotFoundError(f'Specified environment file not found or not a regular file: {env_path}')
+            raise FileNotFoundError(
+                f'Specified environment file not found or not a regular file: {env_path}'
+            )
 
         return env_path
 

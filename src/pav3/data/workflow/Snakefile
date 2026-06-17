@@ -23,7 +23,7 @@ PAV_CONFIG = config
 
 # Read sample table
 ASM_TABLE_PATH = pav3.pipeline.get_pav_asm_table_path(
-    PAV_CONFIG.get('assembly_table', None)
+    pav_config=PAV_CONFIG
 )
 
 ASM_TABLE = pav3.pipeline.read_assembly_table(ASM_TABLE_PATH, PAV_CONFIG)
