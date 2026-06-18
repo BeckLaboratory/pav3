@@ -286,7 +286,7 @@ rule call_tables:
             ref_path = Path(next(in_file).strip())
 
         callsets = tuple(
-            tuple((
+            (
                 (
                     pl.scan_parquet(
                         f'results/{wildcards.asm_name}/call_hap/call_{wildcards.vartype}_{hap}.parquet'
@@ -294,7 +294,7 @@ rule call_tables:
                     .with_row_index('_index')
                 ),
                 f'{wildcards.asm_name}-{hap}',
-            ))
+            )
             for hap in pav3.pipeline.get_hap_list(wildcards.asm_name, ASM_TABLE)
         )
 

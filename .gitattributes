@@ -1,0 +1,10 @@
+# Binary files
+*.sif binary
+*.npz binary
+*.parquet binary
+*.png binary
+*.svg binary
+*.pdf binary
+*.tar binary
+*.gz binary
+*.zip binary

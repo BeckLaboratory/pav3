@@ -1,80 +1,106 @@
+# syntax=docker/dockerfile:1
+###############################################################################
+# PAV3 container image
 #
-# Stage: build
+# The image behaves exactly like the `pav3` command (it is the ENTRYPOINT).
 #
-
-FROM python:3.12-slim AS build_deps
-LABEL pav_stage=build_deps
-
-ENV PAV_BASE=/opt/pav
-
-WORKDIR ${PAV_BASE}
-
-# Binary dependencies (samtools, minimap2, LRA...)
-RUN mkdir -p ${PAV_BASE}/files/docker
-COPY files/docker/build_deps.sh ${PAV_BASE}/files/docker
-RUN files/docker/build_deps.sh
-RUN rm -rf files
-
-
+# Build (run from the repo root; a built wheel must already exist in dist/):
+#   docker build -t pav3:latest .
 #
-# Stage: stage pav files
+# Run (mount the working directory and run as the calling user):
+#   docker run --rm -v "$PWD:$PWD" -w "$PWD" --user "$(id -u):$(id -g)" \
+#       pav3:latest batch
 #
+# Convert to Singularity/Apptainer:
+#   apptainer build pav3.sif docker-daemon://pav3:latest
+###############################################################################
 
-FROM python:3.12-slim AS stage_pav
-LABEL pav_stage=stage_pav
-
-ENV PAV_BASE=/opt/pav
-
-WORKDIR ${PAV_BASE}
-
-
-# Copy PAV files into the container
-COPY files/ ${PAV_BASE}/files/
-COPY scripts/ ${PAV_BASE}/scripts/
-COPY dep/ ${PAV_BASE}/dep/
-COPY pavlib/ ${PAV_BASE}/pavlib/
-COPY rules/ ${PAV_BASE}/rules/
-COPY Snakefile Dockerfile *.md ${PAV_BASE}/
+# --- Pinned versions ---------------------------------------------------------
+# Change a version here and every dependency is re-resolved at build time.
+ARG PYTHON_VERSION=3.12
+ARG MINIMAP2_VERSION=2.31
+# UCSC tools are versioned by dated directory on hgdownload, e.g.
+#   https://hgdownload.soe.ucsc.edu/admin/exe/linux.x86_64.v472/
+# Browse https://hgdownload.soe.ucsc.edu/admin/exe/ for available versions.
+ARG UCSC_VERSION=479
 
 
+###############################################################################
+# Stage 1 - fetch pinned external binaries.
 #
-# Stage: pav
+# Both tools ship as self-contained, statically-built x86_64 binaries, so there
+# is no compiler or htslib to manage. wget/ca-certificates stay in this
+# throwaway stage and never reach the runtime image.
+###############################################################################
+FROM python:${PYTHON_VERSION}-slim AS pav3_tools
+
+ARG MINIMAP2_VERSION
+ARG UCSC_VERSION
+
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends ca-certificates wget bzip2; \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /tools/bin
+
+# minimap2: official prebuilt release (binary is self-contained).
+RUN set -eux; \
+    base="minimap2-${MINIMAP2_VERSION}_x64-linux"; \
+    wget -q "https://github.com/lh3/minimap2/releases/download/v${MINIMAP2_VERSION}/${base}.tar.bz2"; \
+    tar -xjf "${base}.tar.bz2"; \
+    install -m 0755 "${base}/minimap2" ./minimap2; \
+    rm -rf minimap2-*; \
+    ./minimap2 --version
+
+# UCSC bedToBigBed: pinned versioned directory.
+RUN set -eux; \
+    url="https://hgdownload.soe.ucsc.edu/admin/exe/linux.x86_64.v${UCSC_VERSION}/bedToBigBed"; \
+    wget -q "$url" -O bedToBigBed; \
+    chmod 0755 bedToBigBed
+
+
+###############################################################################
+# Stage 2 - runtime image.
+###############################################################################
+FROM python:${PYTHON_VERSION}-slim AS pav3
+
+# Set by files/docker/build (the recommended entry point). When empty, the
+# newest wheel in dist/ is installed instead.
+ARG PAV_VERSION
+
+LABEL org.opencontainers.image.title="PAV3" \
+      org.opencontainers.image.description="Assembly-based variant caller for phased genomes" \
+      org.opencontainers.image.source="https://github.com/BeckLaboratory/pav" \
+      org.opencontainers.image.licenses="MIT" \
+      org.opencontainers.image.version="${PAV_VERSION}"
+
+# External binaries from the tools stage.
+COPY --from=pav3_tools /tools/bin/ /opt/pav/bin/
+ENV PATH="/opt/pav/bin:${PATH}"
+
+# Install the locally-built PAV3 wheel. pip resolves every Python dependency
+# (including agglovar) from PyPI. When PAV_VERSION is given that exact wheel is
+# installed; otherwise the newest wheel in dist/ is selected by version sort.
 #
+# The bind mount reads dist/ straight from the build context, so the wheels are
+# never baked into an image layer.
+RUN --mount=type=bind,source=dist,target=/dist \
+    set -eux; \
+    if [ -n "${PAV_VERSION}" ]; then \
+        wheel="/dist/pav3-${PAV_VERSION}-py3-none-any.whl"; \
+    else \
+        wheel="$(ls /dist/pav3-*.whl | sort -V | tail -n1)"; \
+    fi; \
+    echo "Installing ${wheel}"; \
+    pip install --no-cache-dir "$wheel"; \
+    pav3 --version
 
-FROM python:3.12-slim AS pav
-LABEL pav_stage=pav
+# Container-friendly writable cache/config locations. Lets the image run as an
+# arbitrary UID (Singularity, `--user`) and on a read-only root filesystem.
+ENV HOME=/tmp \
+    XDG_CACHE_HOME=/tmp/.cache \
+    MPLCONFIGDIR=/tmp/.cache/matplotlib
 
-ENV PAV_VERSION="2.4.6"
-ENV PAV_BASE=/opt/pav
-
-LABEL org.jax.becklab.author="Peter Audano<peter.audano@jax.org>"
-LABEL org.jax.becklab.name="PAV"
-LABEL org.jax.becklab.version="${PAV_VERSION}"
-
-WORKDIR ${PAV_BASE}
-
-# Base python and snakemake
-RUN pip3 install \
-    biopython \
-    intervaltree \
-    matplotlib \
-    matplotlib-venn \
-    numpy \
-    pandas \
-    pysam \
-    scipy \
-    snakemake \
-    pulp \
-    drmaa \
-    joblib
-
-# Copy from build
-COPY --from=build_deps ${PAV_BASE} ${PAV_BASE}
-COPY --from=stage_pav ${PAV_BASE} ${PAV_BASE}
-
-RUN files/docker/build_home.sh
-
-# Runtime environment
-ENV PATH="${PATH}:${PAV_BASE}/bin"
-
-ENTRYPOINT ["/opt/pav/files/docker/run"]
+ENTRYPOINT ["pav3"]
+CMD ["--help"]

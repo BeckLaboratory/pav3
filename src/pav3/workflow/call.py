@@ -24,10 +24,61 @@ from ..call.expr import sort_expr
 logger = logging.getLogger(__name__)
 
 
+def _materialize(
+        df: pl.LazyFrame,
+        temp_file_container: TempDirContainer,
+        label: str,
+) -> pl.LazyFrame:
+    """Write a lazy frame to a temporary Parquet file and return a streaming scan of it.
+
+    Used as a materialization barrier between lazy operations. It serves two purposes:
+
+    1. Memory: Variant tables may be very large. Writing intermediate results to a temporary file and re-reading
+       them as streaming scans keeps them off the Python heap instead of accumulating collected frames in memory
+       across the integration loop.
+
+    2. Correctness: `apply_trim_filter` and `apply_discord_and_inner_filter` each add a row-index column
+       (`with_row_index`). When both are chained into a single lazy plan and that plan is sunk, the Polars
+       new-streaming engine mis-optimizes the chained row-index operations and raises a spurious
+       "duplicate name when building schema" / "column not found" error. The same plan collects correctly with
+       the in-memory engine, confirming the logical plan is valid and the fault is in the streaming optimizer.
+       Breaking the plan with a Parquet round-trip isolates each helper's row index and avoids the bug.
+
+    :param df: Lazy frame to materialize.
+    :param temp_file_container: Active temporary file container (must be inside its context).
+    :param label: Label used in the temporary file name.
+
+    :return: Streaming scan over the materialized Parquet file.
+    """
+    temp_file = temp_file_container.next(prefix=f'integrate_{label}_', suffix='.parquet')
+    df.sink_parquet(temp_file)
+    return pl.scan_parquet(temp_file)
+
+
 def integrate_sources(
         pav_params,
         input: dict[str, str],
         output: dict[str, str],
+        temp_dir_name: Optional[str] = None,
+) -> None:
+    """Integrate variant calls from all sources into the final per-haplotype call tables.
+
+    :param pav_params: PAV parameters.
+    :param input: Input file dictionary (Snakemake rule input).
+    :param output: Output file dictionary (Snakemake rule output).
+    :param temp_dir_name: Parent directory for temporary files. Defaults to the system temporary directory.
+    """
+    # Intermediate variant tables are materialized to a temporary directory and re-read as streaming scans (see
+    # `_materialize`). This bounds memory for large callsets and works around a Polars new-streaming engine bug.
+    with TempDirContainer(temp_dir_name, prefix='pav_integrate_') as temp_file_container:
+        _integrate_sources(pav_params, input, output, temp_file_container)
+
+
+def _integrate_sources(
+        pav_params,
+        input: dict[str, str],
+        output: dict[str, str],
+        temp_file_container: TempDirContainer,
 ) -> None:
     inv_min = pav_params.inv_min
     inv_max = pav_params.inv_max if pav_params.inv_max > 0 else float('inf')
@@ -130,6 +181,11 @@ def integrate_sources(
         if not (is_lg or is_inv):
             df = pav3.call.integrate.apply_trim_filter(df, df_trim)
 
+            # Materialization barrier between the two row-index helpers. `apply_trim_filter` and
+            # `apply_discord_and_inner_filter` both call `with_row_index`; chaining them into one sunk plan trips a
+            # Polars streaming-engine bug (see `_materialize`). The round-trip isolates the two row indices.
+            df = _materialize(df, temp_file_container, f'{sourcetype_vartype}_trim')
+
         # Filter DISCORD
         if filter_discord or filter_inner:
             df = pav3.call.integrate.apply_discord_and_inner_filter(
@@ -144,6 +200,11 @@ def integrate_sources(
             is_snv=is_snv,
             existing_ids=collect_list[vartype]
         )
+
+        # Materialize the fully-processed variant table and continue from a streaming scan. Every downstream use
+        # (DISCORD regions, CPX-derived variants, writes, and cross-source aggregation in `collect_list`) reads from
+        # this scan. This keeps large tables off the heap and replaces the previous in-memory `df.collect().lazy()`.
+        df = _materialize(df, temp_file_container, sourcetype_vartype)
 
         # Read CPX segment table
         if sourcetype == 'inter':
@@ -180,11 +241,10 @@ def integrate_sources(
                 collect_list=collect_list,
             )
 
-        # Aggregate if type is split over multiple inputs
+        # Aggregate if type is split over multiple inputs. `df` is already a disk-backed scan (materialized above),
+        # so this keeps memory bounded even when several sources accumulate in `collect_list`.
         if not do_write or len(collect_list[vartype]) > 0:
-            # Collect here, avoid re-collecting for ID (used as existing IDs) and write.
-            # Note: May consume significant memory for some callsets, consider writing to temp and re-reading lazy
-            collect_list[vartype].append(df.collect().lazy())
+            collect_list[vartype].append(df)
 
         # Write
         write_list = [update_discord_frame]

@@ -1,7 +1,6 @@
-**/*.pyc
-**/__pycache__/
-
-local
-config
-
-**/.DS_Store
+# The build only needs the PAV3 wheel(s) in dist/. Keep the build context tiny
+# by excluding everything else (.git, .venv, .tox, source tree, etc.).
+*
+!dist/
+dist/*
+!dist/pav3-*.whl

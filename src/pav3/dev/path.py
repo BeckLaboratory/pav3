@@ -1,5 +1,6 @@
 """Path utilities for development environments."""
 
+import os
 from pathlib import Path
 import tomllib
 
@@ -19,8 +20,16 @@ def get_pav_dir(
         directory.
     """
 
-    if path is None:
-        raise ValueError('path is None')
+    org_path = path
+
+    if path is None or not Path(path).exists():
+        path = os.environ.get('PAV_PATH', None)
+
+        if path is None:
+            path = os.environ.get('UV_PROJECT', None)
+
+        if path is None:
+            raise ValueError(f'Path is missing: {org_path}')
 
     path = Path(path)
 
@@ -36,5 +45,4 @@ def get_pav_dir(
                         == 'pav3'
                 ):
                     return parent
-
     raise FileNotFoundError(f'path {path} does not point to a resource within a PAV source directory')
