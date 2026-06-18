@@ -1,37 +1,39 @@
 #!/usr/bin/env bash
 
-# Build an Apptainer/Singularity image (.sif) from an already-built PAV3 Docker
-# image. The Docker image (pav3:<version>) is read straight from the local
-# Docker daemon, so no intermediate tar archive is needed.
+# Sign and push a built PAV3 Apptainer/Singularity image (.sif) to a library.
 #
-# Build the Docker image first with files/docker/build.
+# Signs the .sif (you will be prompted for the signing key passphrase) and
+# pushes it as "<library>:<version>" (and, by default, "<library>:latest").
+# Build the .sif first with files/container/build_app.
 #
 # Runs correctly regardless of the current working directory: the PAV directory
 # is found relative to this script's location unless overridden with --dir.
 #
 # Usage:
-#   files/apptainer/build [options] [-- apptainer build args...]
+#   files/container/deploy_app [options] [-- apptainer push args...]
 #
 # Options:
 #   -d, --dir DIR          PAV directory (resolved relative to CWD). Overrides
 #                          the location auto-detected from this script.
-#   -p, --pav-version VER  PAV version to build (e.g. 3.0.0.dev22). Defaults to
+#   -p, --pav-version VER  PAV version to push (e.g. 3.0.0.dev22). Defaults to
 #                          the newest wheel in <PAV_DIR>/dist.
-#   -o, --out PATH         Output .sif path (relative to CWD). "<version>" in
-#                          the path is replaced with the PAV version. If PATH is
-#                          an existing directory, "pav3_<version>.sif" is written
-#                          there. Default: <PAV_DIR>/apptainer/pav3_<version>.sif
-#   -t, --tempdir DIR      Scratch directory for the build (APPTAINER_TMPDIR).
-#                          Default: the system temporary directory.
-#   -f, --force            Overwrite the output image if it already exists.
+#   -o, --out PATH         Path to the .sif to push (relative to CWD). "<version>"
+#                          in the path is replaced with the PAV version. If PATH
+#                          is a directory, "pav3_<version>.sif" within it is used.
+#                          Default: <PAV_DIR>/apptainer/pav3_<version>.sif
+#   -S, --no-sign          Push without signing the image first.
+#   -L, --no-latest        Do not also push the "latest" tag.
 #   -n, --pretend          Print the commands without running them.
 #   -q, --quiet            Suppress per-step progress messages.
 #   -h, --help             Print this help and exit.
 #
 # Any unrecognized arguments, and anything after a literal "--", are passed
-# through to the underlying "apptainer build" command.
+# through to the underlying "apptainer push" commands.
 
 set -euo pipefail
+
+# Destination library reference (without the ":<tag>" suffix).
+LIBRARY_REF="library://becklab/pav3/pav3"
 
 # Print the leading comment block (everything after the shebang up to the first
 # non-comment line) as help text.
@@ -67,8 +69,8 @@ SCRIPT_DIR="$(cd -P "$(dirname "$SCRIPT_SOURCE")" >/dev/null 2>&1 && pwd)"
 DIR_ARG=""
 PAV_VERSION=""
 OUT_ARG=""
-TEMPDIR_ARG=""
-FORCE=""
+NOSIGN=""
+NOLATEST=""
 PRETEND=""
 QUIET=""
 EXTRA=()
@@ -84,15 +86,13 @@ while [[ $# -gt 0 ]]; do
         -o|--out)
             [[ $# -ge 2 ]] || err "$1 requires an argument"
             OUT_ARG="$2"; shift 2 ;;
-        -t|--tempdir)
-            [[ $# -ge 2 ]] || err "$1 requires an argument"
-            TEMPDIR_ARG="$2"; shift 2 ;;
-        -f|--force)   FORCE=1; shift ;;
-        -n|--pretend) PRETEND=1; shift ;;
-        -q|--quiet)   QUIET=1; shift ;;
-        -h|--help)    usage; exit 0 ;;
-        --)           shift; EXTRA+=("$@"); break ;;
-        *)            EXTRA+=("$1"); shift ;;
+        -S|--no-sign)   NOSIGN=1; shift ;;
+        -L|--no-latest) NOLATEST=1; shift ;;
+        -n|--pretend)   PRETEND=1; shift ;;
+        -q|--quiet)     QUIET=1; shift ;;
+        -h|--help)      usage; exit 0 ;;
+        --)             shift; EXTRA+=("$@"); break ;;
+        *)              EXTRA+=("$1"); shift ;;
     esac
 done
 
@@ -122,7 +122,7 @@ if [[ -n "$DIR_ARG" ]]; then
     PAV_DIR="$(cd "$DIR_ARG" 2>/dev/null && pwd)" \
         || err "PAV directory not found (--dir): ${DIR_ARG}"
 else
-    # Resolve "../.." relative to this script (files/apptainer -> repo root).
+    # Resolve "../.." relative to this script (files/container -> repo root).
     PAV_DIR="$(cd "${SCRIPT_DIR}/../.." >/dev/null 2>&1 && pwd)" \
         || err "Could not resolve PAV directory from script location: ${SCRIPT_DIR}"
 fi
@@ -133,7 +133,7 @@ DIST_DIR="${PAV_DIR}/dist"
 ### Determine the PAV version ###
 
 if [[ -z "$PAV_VERSION" ]]; then
-    # Auto-detect the newest wheel (same logic as files/docker/build).
+    # Auto-detect the newest wheel (same logic as files/container/build_app).
     shopt -s nullglob
     wheels=("${DIST_DIR}"/pav3-*.whl)
     shopt -u nullglob
@@ -148,26 +148,26 @@ if [[ -z "$PAV_VERSION" ]]; then
     SRC_VERSION="$(sed -nE "s/^__version__[[:space:]]*=[[:space:]]*['\"]([^'\"]+)['\"].*/\1/p" "$INIT_FILE" 2>/dev/null || true)"
 
     if [[ "$PAV_VERSION" != "$SRC_VERSION" ]]; then
-        warn "Latest wheel version (${PAV_VERSION}) does not match the source version (${SRC_VERSION:-not found}) in ${INIT_FILE}. Building from Docker image pav3:${PAV_VERSION}; run \"uv build\" or set \"-p <version>\" if this is unexpected."
+        warn "Latest wheel version (${PAV_VERSION}) does not match the source version (${SRC_VERSION:-not found}) in ${INIT_FILE}. Pushing pav3_${PAV_VERSION}.sif; run \"uv build\" or set \"-p <version>\" if this is unexpected."
     fi
 fi
 
 
-### Resolve the output path ###
+### Resolve the .sif path (mirrors files/container/build_app) ###
 
 if [[ -n "$OUT_ARG" ]]; then
     out="${OUT_ARG//<version>/$PAV_VERSION}"
     if [[ -d "$out" ]]; then
-        OUT="${out%/}/pav3_${PAV_VERSION}.sif"
+        SIF="${out%/}/pav3_${PAV_VERSION}.sif"
     else
-        OUT="$out"
+        SIF="$out"
     fi
 else
-    OUT="${PAV_DIR}/apptainer/pav3_${PAV_VERSION}.sif"
+    SIF="${PAV_DIR}/apptainer/pav3_${PAV_VERSION}.sif"
 fi
 
-if [[ -e "$OUT" && -z "$FORCE" ]]; then
-    err "Output image already exists: ${OUT}. Use -f/--force to overwrite."
+if [[ -z "$PRETEND" && ! -f "$SIF" ]]; then
+    err "Image not found: ${SIF}. Build it first with files/container/build_app."
 fi
 
 
@@ -181,39 +181,27 @@ fi
 APP="$(basename "$APP")"
 
 
-### Build ###
-
-SOURCE_IMAGE="docker-daemon://pav3:${PAV_VERSION}"
-
-# Apptainer build scratch directory. Defaults to the system temp directory.
-# Apptainer needs an existing, absolute path (it resolves the mount point), so
-# make the path absolute relative to CWD; it is created below.
-if [[ -n "$TEMPDIR_ARG" ]]; then
-    case "$TEMPDIR_ARG" in
-        /*) TEMPDIR_ABS="$TEMPDIR_ARG" ;;
-        *)  TEMPDIR_ABS="$(pwd)/$TEMPDIR_ARG" ;;
-    esac
-    export APPTAINER_TMPDIR="$TEMPDIR_ABS"
-    export SINGULARITY_TMPDIR="$TEMPDIR_ABS"
-fi
-
-BUILD_OPTS=()
-[[ -n "$FORCE" ]] && BUILD_OPTS+=(--force)
+### Sign and push ###
 
 progress "PAV directory:  ${PAV_DIR}"
 progress "PAV version:    ${PAV_VERSION}"
-progress "Source image:   ${SOURCE_IMAGE}"
-progress "Output image:   ${OUT}"
-[[ -n "$TEMPDIR_ARG" ]] && progress "Temp directory: ${TEMPDIR_ABS}"
+progress "Image:          ${SIF}"
+progress "Library:        ${LIBRARY_REF}"
 
-# Ensure the output and scratch directories exist.
-run mkdir -p "$(dirname "$OUT")"
-[[ -n "$TEMPDIR_ARG" ]] && run mkdir -p "$TEMPDIR_ABS"
+# Sign the image (prompts for the signing key passphrase) unless suppressed.
+if [[ -z "$NOSIGN" ]]; then
+    progress "Signing ${SIF}"
+    run "$APP" sign "$SIF"
+fi
 
-run "$APP" build \
-    ${BUILD_OPTS[@]+"${BUILD_OPTS[@]}"} \
-    ${EXTRA[@]+"${EXTRA[@]}"} \
-    "$OUT" \
-    "$SOURCE_IMAGE"
+# Versioned tag.
+progress "Pushing ${LIBRARY_REF}:${PAV_VERSION}"
+run "$APP" push ${EXTRA[@]+"${EXTRA[@]}"} "$SIF" "${LIBRARY_REF}:${PAV_VERSION}"
 
-progress "Done. Built ${OUT}"
+# "latest" tag (unless suppressed).
+if [[ -z "$NOLATEST" ]]; then
+    progress "Pushing ${LIBRARY_REF}:latest"
+    run "$APP" push ${EXTRA[@]+"${EXTRA[@]}"} "$SIF" "${LIBRARY_REF}:latest"
+fi
+
+progress "Done. Pushed ${LIBRARY_REF}:${PAV_VERSION}"

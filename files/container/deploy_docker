@@ -1,0 +1,176 @@
+#!/usr/bin/env bash
+
+# Push a built PAV3 Docker image to its registry repository.
+#
+# Tags the locally-built "pav3:<version>" image as "<repo>:<version>" (and, by
+# default, "<repo>:latest") and pushes both. Build the image first with
+# files/container/build_docker.
+#
+# Runs correctly regardless of the current working directory: the PAV directory
+# is found relative to this script's location unless overridden with --dir.
+#
+# Usage:
+#   files/container/deploy_docker [options] [-- docker push args...]
+#
+# Options:
+#   -d, --dir DIR          PAV directory (resolved relative to CWD). Overrides
+#                          the location auto-detected from this script.
+#   -p, --pav-version VER  PAV version to push (e.g. 3.0.0.dev22). Defaults to
+#                          the newest wheel in <PAV_DIR>/dist.
+#   -L, --no-latest        Do not also push the "latest" tag.
+#   -n, --pretend          Print the docker commands without running them.
+#   -v, --verbose          Print commands as they run.
+#   -q, --quiet            Suppress per-step progress messages.
+#   -h, --help             Print this help and exit.
+#
+# Any unrecognized arguments, and anything after a literal "--", are passed
+# through to the underlying "docker push" commands.
+
+set -euo pipefail
+
+# Destination repository on the registry (Docker Hub by default).
+DOCKER_REPO="becklab/pav3"
+
+# Print the leading comment block (everything after the shebang up to the first
+# non-comment line) as help text.
+usage() {
+    awk 'NR==1 { next } /^#/ { started=1; sub(/^# ?/, ""); print; next } started { exit }' "$0"
+}
+
+err() {
+    printf 'error: %s\n' "$*" >&2
+    exit 1
+}
+
+warn() {
+    printf 'warning: %s\n' "$*" >&2
+}
+
+
+### Resolve this script's directory (following symlinks) ###
+
+SCRIPT_SOURCE="${BASH_SOURCE[0]}"
+
+while [[ -h "$SCRIPT_SOURCE" ]]; do
+    dir="$(cd -P "$(dirname "$SCRIPT_SOURCE")" >/dev/null 2>&1 && pwd)"
+    SCRIPT_SOURCE="$(readlink "$SCRIPT_SOURCE")"
+    [[ "$SCRIPT_SOURCE" != /* ]] && SCRIPT_SOURCE="${dir}/${SCRIPT_SOURCE}"
+done
+
+SCRIPT_DIR="$(cd -P "$(dirname "$SCRIPT_SOURCE")" >/dev/null 2>&1 && pwd)"
+
+
+### Parse arguments ###
+
+DIR_ARG=""
+PAV_VERSION=""
+NOLATEST=""
+PRETEND=""
+VERBOSE=""
+QUIET=""
+EXTRA=()
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -d|--dir)
+            [[ $# -ge 2 ]] || err "$1 requires an argument"
+            DIR_ARG="$2"; shift 2 ;;
+        -p|--pav-version)
+            [[ $# -ge 2 ]] || err "$1 requires an argument"
+            PAV_VERSION="$2"; shift 2 ;;
+        -L|--no-latest) NOLATEST=1; shift ;;
+        -n|--pretend)   PRETEND=1; shift ;;
+        -v|--verbose)   VERBOSE=1; shift ;;
+        -q|--quiet)     QUIET=1; shift ;;
+        -h|--help)      usage; exit 0 ;;
+        --)             shift; EXTRA+=("$@"); break ;;
+        *)              EXTRA+=("$1"); shift ;;
+    esac
+done
+
+
+### Helpers ###
+
+# Print a progress message unless running quiet.
+progress() {
+    [[ -n "$QUIET" ]] || printf '==> %s\n' "$*"
+}
+
+# Run a command, echoing it first when verbose or pretending. Under --pretend
+# the command is printed but not executed.
+run() {
+    if [[ -n "$VERBOSE" || -n "$PRETEND" ]]; then
+        printf '+'; printf ' %q' "$@"; printf '\n'
+    fi
+    [[ -n "$PRETEND" ]] && return 0
+    "$@"
+}
+
+
+### Resolve the PAV directory ###
+
+if [[ -n "$DIR_ARG" ]]; then
+    # Resolve --dir relative to the current working directory.
+    PAV_DIR="$(cd "$DIR_ARG" 2>/dev/null && pwd)" \
+        || err "PAV directory not found (--dir): ${DIR_ARG}"
+else
+    # Resolve "../.." relative to this script (files/container -> repo root).
+    PAV_DIR="$(cd "${SCRIPT_DIR}/../.." >/dev/null 2>&1 && pwd)" \
+        || err "Could not resolve PAV directory from script location: ${SCRIPT_DIR}"
+fi
+
+DIST_DIR="${PAV_DIR}/dist"
+
+
+### Determine the PAV version ###
+
+if [[ -z "$PAV_VERSION" ]]; then
+    # Auto-detect the newest wheel (same logic as files/container/build_docker).
+    shopt -s nullglob
+    wheels=("${DIST_DIR}"/pav3-*.whl)
+    shopt -u nullglob
+
+    [[ ${#wheels[@]} -gt 0 ]] \
+        || err "No PAV wheel files found in ${DIST_DIR}. Run \"uv build\" to generate one, or set the version with \"-p <version>\"."
+
+    PAV_VERSION="$(ls "${DIST_DIR}"/pav3-*.whl | sort -V | tail -1 | sed -E 's/.*pav3-(.*)-py3.*/\1/')"
+
+    # Warn (non-fatal) if the newest wheel does not match the in-tree version.
+    INIT_FILE="${PAV_DIR}/src/pav3/__init__.py"
+    SRC_VERSION="$(sed -nE "s/^__version__[[:space:]]*=[[:space:]]*['\"]([^'\"]+)['\"].*/\1/p" "$INIT_FILE" 2>/dev/null || true)"
+
+    if [[ "$PAV_VERSION" != "$SRC_VERSION" ]]; then
+        warn "Latest wheel version (${PAV_VERSION}) does not match the source version (${SRC_VERSION:-not found}) in ${INIT_FILE}. Pushing pav3:${PAV_VERSION}; run \"uv build\" or set \"-p <version>\" if this is unexpected."
+    fi
+fi
+
+LOCAL_IMAGE="pav3:${PAV_VERSION}"
+
+
+### Verify the local image exists ###
+
+if [[ -z "$PRETEND" ]] && ! docker image inspect "$LOCAL_IMAGE" >/dev/null 2>&1; then
+    err "Local image ${LOCAL_IMAGE} not found. Build it first with files/container/build_docker."
+fi
+
+
+### Push ###
+
+progress "PAV directory:  ${PAV_DIR}"
+progress "PAV version:    ${PAV_VERSION}"
+progress "Local image:    ${LOCAL_IMAGE}"
+progress "Repository:     ${DOCKER_REPO}"
+
+# Versioned tag.
+progress "Pushing ${DOCKER_REPO}:${PAV_VERSION}"
+run docker tag "${LOCAL_IMAGE}" "${DOCKER_REPO}:${PAV_VERSION}"
+run docker push ${EXTRA[@]+"${EXTRA[@]}"} "${DOCKER_REPO}:${PAV_VERSION}"
+
+# "latest" tag (unless suppressed).
+if [[ -z "$NOLATEST" ]]; then
+    progress "Pushing ${DOCKER_REPO}:latest"
+    run docker tag "${LOCAL_IMAGE}" "${DOCKER_REPO}:latest"
+    run docker push ${EXTRA[@]+"${EXTRA[@]}"} "${DOCKER_REPO}:latest"
+fi
+
+progress "Done. Pushed ${DOCKER_REPO}:${PAV_VERSION}"

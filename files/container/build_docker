@@ -6,7 +6,7 @@
 # is found relative to this script's location unless overridden with --dir.
 #
 # Usage:
-#   files/docker/build [options] [-- docker build args...]
+#   files/container/build_docker [options] [-- docker build args...]
 #
 # Options:
 #   -d, --dir DIR          PAV directory (resolved relative to CWD). Overrides
@@ -106,7 +106,7 @@ if [[ -n "$DIR_ARG" ]]; then
     PAV_DIR="$(cd "$DIR_ARG" 2>/dev/null && pwd)" \
         || err "PAV directory not found (--dir): ${DIR_ARG}"
 else
-    # Resolve "../.." relative to this script (files/docker -> repo root).
+    # Resolve "../.." relative to this script (files/container -> repo root).
     PAV_DIR="$(cd "${SCRIPT_DIR}/../.." >/dev/null 2>&1 && pwd)" \
         || err "Could not resolve PAV directory from script location: ${SCRIPT_DIR}"
 fi
