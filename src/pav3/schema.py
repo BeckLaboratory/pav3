@@ -98,6 +98,15 @@ VARIANT: dict[str, PolarsDataType] = {
     'discord': pl.List(pl.String),
     'inner': pl.List(pl.String),
     'seq': agglovar.schema.VARIANT['seq'],
+    'mg_src': pl.List(
+        pl.Struct({
+            'src_index': pl.Int32,
+            'sample': pl.String,
+            'hap': pl.String,
+            'var_index': pl.UInt32,
+            'var_id': pl.String,
+        })
+    ),
 }
 """
 Schema for variant tables.
@@ -167,6 +176,16 @@ Fields:
         that are part of a larger variant (i.e. duplicated region of an insertion or complex event). If not empty, then
         "INNER" must also be present in "filter".
     * seq: Variant sequence in reference orientation. Null if not defined (never "*" or other placeholders).
+    * mg_src: List of source entries for a merged variant, one per haplotype that contributed to the merged call.
+        This is a PAV-specific reshaping of the merge source struct emitted by agglovar: the agglovar source-name and
+        metadata fields are resolved into explicit "sample" and "hap" fields (the metadata is dropped once consumed).
+        Each struct has fields:
+
+            * src_index: Source index (0-based input order of the merged callset).
+            * sample: Sample (assembly) name the source variant came from.
+            * hap: Haplotype the source variant came from.
+            * var_index: Index of the source variant within its callset ("var_index" of the source table).
+            * var_id: ID of the source variant within its callset.
 """
 
 

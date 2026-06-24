@@ -743,9 +743,13 @@ def gt_column_asm(
             df.select(
                 '_index', 'chrom', 'pos', 'end',
                 (
+                    # Match the source's sample and haplotype directly from the "mg_src" struct
+                    # fields (see pav3.schema.VARIANT). These are resolved from merge metadata when
+                    # the callset is built, which avoids splitting a "sample-hap" name on "-".
                     pl.col('mg_src')
                     .list.filter(
-                        pl.element().struct.field('id') == f'{asm_name}-{hap}'
+                        (pl.element().struct.field('sample') == asm_name)
+                        & (pl.element().struct.field('hap') == hap)
                     ).list.len() > 0
                 ).alias('in_hap'),
             )

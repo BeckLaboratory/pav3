@@ -373,9 +373,36 @@ def _integrate_sources(
     )
 
 
+def _mg_src_sample_hap_expr() -> pl.Expr:
+    """Reshape the agglovar merge source list into PAV's "mg_src" schema.
+
+    agglovar emits each "mg_src" entry as a struct with "src_name" and "src_meta" (a JSON string
+    holding the callset metadata PAV attaches per source, i.e. "sample" and "hap"). This resolves
+    "sample" and "hap" into explicit struct fields from the metadata and drops both "src_name" and
+    "src_meta", producing the "mg_src" struct defined by `pav3.schema.VARIANT`. Reading the
+    haplotype from metadata avoids splitting the source name on "-", which breaks when a sample or
+    haplotype name itself contains "-".
+
+    :return: An expression replacing the "mg_src" column with the PAV-specific struct schema.
+    """
+    meta = pl.element().struct.field('src_meta')
+
+    return (
+        pl.col('mg_src').list.eval(
+            pl.struct(
+                pl.element().struct.field('src_index').cast(pl.Int32).alias('src_index'),
+                meta.str.json_path_match('$.sample').cast(pl.String).alias('sample'),
+                meta.str.json_path_match('$.hap').cast(pl.String).alias('hap'),
+                pl.element().struct.field('var_index').cast(pl.UInt32).alias('var_index'),
+                pl.element().struct.field('var_id').cast(pl.String).alias('var_id'),
+            )
+        ).alias('mg_src')
+    )
+
+
 def merge_haplotypes(
         vartype: str,
-        callsets: Iterable[agglovar.merge.base.CallsetDefType],
+        callsets: Iterable[agglovar.merge.base.CallsetDefInputType],
         ref_path: str | Path,
         out_path: str | Path,
         merge_params: Optional[str | Iterable[dict[str, Any]]] = None,
@@ -503,6 +530,7 @@ def merge_haplotypes(
                         retain_index=True,
                         pre_filter=pre_filter,
                     )
+                    .with_columns(_mg_src_sample_hap_expr())
                     .sort(merge_sort_expr)
                     .with_columns(agglovar.util.var.id_version_expr())
                     .sink_parquet(next_filename)

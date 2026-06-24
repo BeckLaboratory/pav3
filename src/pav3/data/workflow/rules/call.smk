@@ -294,6 +294,10 @@ rule call_tables:
                     .with_row_index('_index')
                 ),
                 f'{wildcards.asm_name}-{hap}',
+                {
+                    'sample': wildcards.asm_name,
+                    'hap': hap,
+                }
             )
             for hap in pav3.pipeline.get_hap_list(wildcards.asm_name, ASM_TABLE)
         )
