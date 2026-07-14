@@ -13,6 +13,7 @@ __all__ = [
     'input_tuples_to_fasta',
     'get_override_config',
     'read_assembly_table',
+    'resolve_relative',
     'expand_fofn',
     'link_fasta',
     'get_rules_path',
@@ -893,7 +894,9 @@ def link_fasta(
     # Return a file list
     return [
         dest_fa_path, dest_fai_path
-    ] + [dest_gzi_path] if dest_gzi_path is not None else []
+    ] + (
+        [dest_gzi_path] if dest_gzi_path is not None else []
+    )
 
 def resolve_relative(
         source_path: str | Path,
