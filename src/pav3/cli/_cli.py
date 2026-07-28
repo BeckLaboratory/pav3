@@ -10,6 +10,8 @@ from typing import Any, Optional
 from ._subcommand_license import _add_subparser_license, subcommand_license
 from ._subcommand_call import _add_subparser_call, subcommand_call
 from ._subcommand_batch import _add_subparser_batch, subcommand_batch
+from ._subcommand_lift import _add_subparser_lift, subcommand_lift
+from ._subcommand_subseq import _add_subparser_subseq, subcommand_subseq
 from ._common_opt import _add_opt_version
 
 
@@ -46,6 +48,8 @@ def parse_arguments(
     # Command: call
     _add_subparser_call(subparsers)
     _add_subparser_batch(subparsers)
+    _add_subparser_lift(subparsers)
+    _add_subparser_subseq(subparsers)
     _add_subparser_license(subparsers)
 
     # Parse
@@ -82,6 +86,22 @@ def main(
             **{
                 attr: getattr(args, attr)
                 for attr in list(inspect.signature(subcommand_batch).parameters.keys())
+            }
+        )
+
+    if args.subcommand == 'lift':
+        return subcommand_lift(
+            **{
+                attr: getattr(args, attr)
+                for attr in list(inspect.signature(subcommand_lift).parameters.keys())
+            }
+        )
+
+    if args.subcommand == 'subseq':
+        return subcommand_subseq(
+            **{
+                attr: getattr(args, attr)
+                for attr in list(inspect.signature(subcommand_subseq).parameters.keys())
             }
         )
 

@@ -1,6 +1,9 @@
 """PAV Python library routines."""
 
-__version__ = '3.0.0.dev23'
+import importlib
+import logging
+
+__version__ = '3.0.0.dev24'
 
 __all__ = [
     'align',
@@ -56,7 +59,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 """
 
-import importlib
-
 for name in __all__:
     globals()[name] = importlib.import_module(f'.{name}', package=__name__)
+
+
+# Configure logging
+logging.getLogger(__name__).addHandler(logging.NullHandler())

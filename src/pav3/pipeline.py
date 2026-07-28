@@ -6,6 +6,7 @@ Functions for finding data.
 __all__ = [
     'expand_pattern',
     'get_hap_list',
+    'sample_hap_iter',
     'get_asm_config',
     'get_asm_input_list',
     'expand_input',
@@ -26,7 +27,7 @@ import importlib.resources
 import itertools
 import os
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, Iterator, Optional
 import re
 import pysam
 
@@ -152,6 +153,48 @@ def get_hap_list(
         raise ValueError(f'No haplotypes found for assembly {asm_name}: All hap columns are missing or empty')
 
     return hap_list
+
+
+def sample_hap_iter(
+        asm_table: pl.DataFrame,
+        sample: Optional[str] = None,
+        hap: Optional[str] = None,
+) -> Iterator[tuple[str, str]]:
+    """Iterate over (sample, hap) pairs defined in an assembly table.
+
+    If `sample` is `None`, iterate all samples in the assembly table, otherwise restrict to `sample`. For each sample,
+    if `hap` is `None`, iterate all haplotypes defined for that sample (see :func:`get_hap_list`), otherwise restrict to
+    `hap` and skip samples where that haplotype is not defined. Samples with no defined haplotypes are skipped.
+
+    :param asm_table: Assembly table (see :func:`read_assembly_table`).
+    :param sample: Sample name or `None` to iterate all samples.
+    :param hap: Haplotype name or `None` to iterate all haplotypes for each sample.
+
+    :yields: Tuples of (sample, hap).
+
+    :raises ValueError: If `sample` is given but not present in the assembly table.
+    """
+    if sample is not None:
+        if sample not in asm_table['name']:
+            raise ValueError(f'Sample not found in the assembly table: {sample}')
+
+        sample_list = [sample]
+    else:
+        sample_list = list(asm_table['name'])
+
+    for sample_name in sample_list:
+        try:
+            hap_list = get_hap_list(sample_name, asm_table)
+        except ValueError:
+            # Sample has no defined haplotypes (all hap columns empty), skip it
+            continue
+
+        if hap is not None:
+            if hap in hap_list:
+                yield sample_name, hap
+        else:
+            for hap_name in hap_list:
+                yield sample_name, hap_name
 
 
 def get_asm_config(
@@ -898,6 +941,7 @@ def link_fasta(
         [dest_gzi_path] if dest_gzi_path is not None else []
     )
 
+
 def resolve_relative(
         source_path: str | Path,
         dest_path: str | Path,
@@ -1040,7 +1084,7 @@ def get_pav_config_path(
 
 def get_pav_asm_table_path(
         pav_config: Optional[dict] = None,
-        root_path: Optional[str | Path] = Path('.'),
+        root_path: Optional[str | Path] = None,
 ) -> Path:
     """Get a path to the assembly table.
 

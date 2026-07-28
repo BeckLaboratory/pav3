@@ -22,6 +22,8 @@ import polars as pl
 import pysam
 from typing import Iterable, Optional
 
+import Bio.Seq
+
 from .. import schema
 
 from ..io import SamStreamer
@@ -36,6 +38,17 @@ from .records import check_record
 from .score import ScoreModel, get_score_model
 
 logger = logging.getLogger(__name__)
+
+
+def _reverse_complement(sequence: str) -> str:
+    """Reverse-complement a nucleotide sequence.
+
+    :param sequence: Sequence.
+
+    :returns: Reverse-complemented sequence.
+    """
+    return str(Bio.Seq.Seq(sequence).reverse_complement())
+
 
 ALIGN_TABLE_SORT_ORDER = ['chrom', 'pos', 'end', 'align_index']
 """Sort order for alignment tables."""
@@ -161,7 +174,7 @@ def seq_to_align_ops(
 
 def sam_to_align_table(
         sam_path: str | Path,
-        df_qry_fai: pl.DataFrame,
+        df_qry_fai: Optional[pl.DataFrame] = None,
         min_mapq: int = 0,
         score_model: Optional[ScoreModel | str] = None,
         lc_model: Optional[LCAlignModel] = None,
@@ -169,15 +182,24 @@ def sam_to_align_table(
         flag_filter: int = 0x700,
         ref_fa_filename: Optional[str] = None,
         qry_fa_filename: Optional[str] = None,
-) -> pl.DataFrame:
+        collect_qry_fai: bool = False,
+        collect_qry_seq: bool = False,
+) -> pl.DataFrame | tuple[pl.DataFrame, pl.DataFrame, Optional[dict[str, str]]]:
     """Read alignment records from a SAM file.
 
     Avoid pysam, it uses htslib, which has a limit of 268,435,456 bp for each alignment record, and clipping on a CIGAR
     string can exceed this limit (https://github.com/samtools/samtools/issues/1667) and causing PAV to crash with an
     error message starting with "CIGAR length too long at position".
 
+    When `collect_qry_fai` is set, query lengths are derived from the alignment records in the same pass (so a query
+    FASTA index is not needed) and `df_qry_fai` may be `None`. When `collect_qry_seq` is also set, the forward-oriented
+    query sequence of each contig is retained (recovered from the SEQ field of its primary record when it is present
+    and not hard-clipped). This lets a caller build the alignment table and recover query lengths/sequences from a
+    single scan of the alignment file.
+
     :param sam_path: File to read.
-    :param df_qry_fai: Pandas Series with query names as keys and query lengths as values.
+    :param df_qry_fai: Query FAI table (`qry_id`/`len`). May be `None` when `collect_qry_fai` is set, in which case it
+        is derived from the alignment records.
     :param min_mapq: Minimum MAPQ score for alignment record.
     :param score_model: Score model to use.
     :param lc_model: LCAlignModel to use.
@@ -188,17 +210,29 @@ def sam_to_align_table(
     :param ref_fa_filename: Reference FASTA filename.
     :param qry_fa_filename: Query FASTA filename. Required if "M" alignment operations are present and sequence fields
         are missing.
+    :param collect_qry_fai: Derive query lengths from the alignment records and return them (allows `df_qry_fai=None`).
+    :param collect_qry_seq: Retain forward-oriented query sequences recovered from primary records. Implies returning
+        the query data tuple.
 
-    :returns: Table of alignment records.
+    :returns: The alignment table, or, when `collect_qry_fai` or `collect_qry_seq` is set, a tuple of
+        (alignment table, query FAI, query sequence dict or `None`).
 
     :raises ValueError: If function arguments are invalid.
     """
     if lc_model is None:
         lc_model = null_model()
 
+    return_qry_data = collect_qry_fai or collect_qry_seq
+
+    if df_qry_fai is None and not collect_qry_fai:
+        raise ValueError('df_qry_fai is required unless collect_qry_fai is set')
+
     # Rename chrom to qry_id in FAI if it wasn't already done
-    if 'chrom' in df_qry_fai.columns:
+    if df_qry_fai is not None and 'chrom' in df_qry_fai.columns:
         df_qry_fai = df_qry_fai.rename({'chrom': 'qry_id'})
+
+    qry_len_map: dict[str, int] = {}
+    qry_seq_map: dict[str, str] = {}
 
     # Get score model and feature generator
     score_model = get_score_model(score_model)
@@ -344,6 +378,22 @@ def sam_to_align_table(
                 if chrom == '*' or qry_id == '*':
                     raise ValueError(f'Found mapped read with missing names (chrom={chrom}, qry_id={qry_id})')
 
+                # Derive query length (and, for subseq, the forward query sequence) from the same pass
+                if return_qry_data:
+                    full_qry_len = int(np.sum(
+                        op_arr[np.isin(op_arr[:, 0], op.CONSUMES_QRY_ARR) | (op_arr[:, 0] == op.H), 1]
+                    ))
+
+                    if collect_qry_fai and full_qry_len > qry_len_map.get(qry_id, -1):
+                        qry_len_map[qry_id] = full_qry_len
+
+                    # Only a primary record (not secondary/supplementary) carries the full contig sequence
+                    if collect_qry_seq and qry_id not in qry_seq_map and not (flags & 0x900) and tok[9] != '*':
+                        forward_seq = _reverse_complement(tok[9]) if is_rev else tok[9]
+
+                        if len(forward_seq) == full_qry_len:  # Skip hard-clipped primaries (partial SEQ)
+                            qry_seq_map[qry_id] = forward_seq
+
                 filter = []
 
                 if flags & flag_filter:
@@ -376,6 +426,13 @@ def sam_to_align_table(
 
     if ref_fasta is not None:
         ref_fasta.close()
+
+    # Derive the query FAI from the alignment records if it was not provided
+    if df_qry_fai is None:
+        df_qry_fai = pl.DataFrame(
+            {'qry_id': list(qry_len_map.keys()), 'len': list(qry_len_map.values())},
+            schema={'qry_id': pl.String, 'len': pl.Int64},
+        )
 
     # Merge records
     df = pl.DataFrame(record_list, orient='row', schema=schema.ALIGN)
@@ -415,7 +472,10 @@ def sam_to_align_table(
 
     check_table(df)
 
-    # Return alignment table
+    # Return alignment table (with query data when requested)
+    if return_qry_data:
+        return df, df_qry_fai, (qry_seq_map if collect_qry_seq else None)
+
     return df
 
 

@@ -47,7 +47,7 @@ wheels = [
 
 [[package]]
 name = "agglovar"
-version = "0.0.1.dev16"
+version = "0.0.1.dev17"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "biopython" },
@@ -57,9 +57,9 @@ dependencies = [
     { name = "polars", extra = ["numpy", "pandas", "pyarrow"] },
     { name = "pysam" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/cc/ce/44636fb185ac12a7bcf055c27f70e39c393f5ecb64ef307fea3a26508878/agglovar-0.0.1.dev16.tar.gz", hash = "sha256:0522413e3194fd7d66c7e4a5f97125dba76ee5c24712f2428284618d8711eb1c", size = 100349, upload-time = "2026-06-24T10:50:46.001Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/6b/ef/b07447e8c85dec1873c6d1dc9ff1db3e58685229fad5e9044bf4a377f4cf/agglovar-0.0.1.dev17.tar.gz", hash = "sha256:ba2973c04f8b0144db88b56bd96546e7ef3773880dc5d6ec283d7101352d27b0", size = 103584, upload-time = "2026-07-07T17:23:17.68Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/74/aa/12fdbaa283041a810928d9a7f460a15175e989f3f2186dbc8cefb6f92a5f/agglovar-0.0.1.dev16-py3-none-any.whl", hash = "sha256:b004c33e337aaa583457e1492e8c77f8c5abb801657feb4f38aa78ee04477155", size = 114888, upload-time = "2026-06-24T10:50:44.858Z" },
+    { url = "https://files.pythonhosted.org/packages/71/3e/f8ef008c312d5dbd368a99e801f6276d1080bb03219adcbea3f22078f09b/agglovar-0.0.1.dev17-py3-none-any.whl", hash = "sha256:52f645c5130721283c9b9b523eb128506f333ebf13ef69ef8a7382a9e96b685e", size = 118966, upload-time = "2026-07-07T17:23:16.457Z" },
 ]
 
 [[package]]
@@ -1652,7 +1652,7 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
-fig = [
+gfig = [
     { name = "matplotlib" },
 ]
 
@@ -1682,13 +1682,13 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "agglovar", specifier = "==0.0.1.dev16" },
+    { name = "agglovar", specifier = "==0.0.1.dev17" },
     { name = "biopython", specifier = ">=1.85" },
     { name = "fastexcel", specifier = ">=0.14.0" },
     { name = "frozendict", specifier = ">=2.4.6" },
     { name = "hmmlearn", specifier = ">=0.3.3" },
     { name = "intervaltree", specifier = ">=3.1.0" },
-    { name = "matplotlib", marker = "extra == 'fig'", specifier = ">=3.10.8" },
+    { name = "matplotlib", marker = "extra == 'gfig'", specifier = ">=3.10.8" },
     { name = "numpy", specifier = ">=2.3.2" },
     { name = "polars", extras = ["numpy", "pandas", "pyarrow"], specifier = ">=1.41.0" },
     { name = "pyarrow", specifier = ">=21.0.0" },
@@ -1697,7 +1697,7 @@ requires-dist = [
     { name = "scipy-stubs", specifier = "==1.16.1.1" },
     { name = "snakemake", specifier = ">=9.9.0" },
 ]
-provides-extras = ["fig"]
+provides-extras = ["gfig"]
 
 [package.metadata.requires-dev]
 dev = [
