@@ -54,7 +54,7 @@ rule tracks_var_invdupcpx:
         ref_fai = pav3.pipeline.expand_fofn(input.ref_fofn)[1]
         df_fai = agglovar.fa.read_fai(ref_fai)
 
-        df, as_lines = pav3.fig.tracks.call_hap_invdupcpx(
+        chunk_iter, as_lines = pav3.fig.tracks.call_hap_invdupcpx(
             {
                 'asm_name': wildcards.asm_name,
                 'hap': wildcards.hap,
@@ -77,12 +77,7 @@ rule tracks_var_invdupcpx:
             with open(temp_as, 'wt') as out_file:
                 out_file.write('\n'.join(as_lines))
 
-            (
-                df
-                .cast(pl.String)
-                .fill_null('.')
-                .sink_csv(temp_bed, separator='\t', include_header=False)
-            )
+            pav3.fig.tracks.write_track_bed(chunk_iter, temp_bed)
 
             shell(
                 """bedToBigBed -tab -as={temp_as} -type=bed9+ {temp_bed} {ref_fai} {output.bb}"""
@@ -111,7 +106,7 @@ rule tracks_var_insdel_snv:
         # if not bb_tool:
         #     raise FileNotFoundError('bedToBigBed not found')
 
-        df, as_lines = pav3.fig.tracks.call_hap_insdelsnv(
+        chunk_iter, as_lines = pav3.fig.tracks.call_hap_insdelsnv(
             {
                 'asm_name': wildcards.asm_name,
                 'hap': wildcards.hap,
@@ -131,12 +126,7 @@ rule tracks_var_insdel_snv:
             with open(temp_as, 'wt') as out_file:
                 out_file.write('\n'.join(as_lines))
 
-            (
-                df
-                .cast(pl.String)
-                .fill_null('.')
-                .sink_csv(temp_bed, separator='\t', include_header=False)
-            )
+            pav3.fig.tracks.write_track_bed(chunk_iter, temp_bed)
 
             shell(
                 """bedToBigBed -tab -as={temp_as} -type=bed9+ {temp_bed} {ref_fai} {output.bb}"""

@@ -94,7 +94,7 @@ VARIANT: dict[str, PolarsDataType] = {
     'var_index': pl.UInt32,
     'hom_ref': pl.Struct({'up': pl.Int32, 'dn': pl.Int32}),
     'hom_qry': pl.Struct({'up': pl.Int32, 'dn': pl.Int32}),
-    'derived': pl.List(pl.String),
+    'derived': pl.String,
     'discord': pl.List(pl.String),
     'inner': pl.List(pl.String),
     'seq': agglovar.schema.VARIANT['seq'],
@@ -107,6 +107,17 @@ VARIANT: dict[str, PolarsDataType] = {
             'var_id': pl.String,
         })
     ),
+    'mg_stat': pl.List(
+        pl.Struct({
+            'ro': pl.Float32,
+            'offset_dist': pl.Int32,
+            'offset_prop': pl.Float32,
+            'size_ro': pl.Float32,
+            'match_prop': pl.Float32,
+            'weight': pl.Float32,
+        })
+    ),
+    'mg_src_lead': pl.UInt32,
 }
 """
 Schema for variant tables.
@@ -152,22 +163,25 @@ Fields:
     * var_score: Variant score based on a scoring model.
     * outer_ref: Outer reference region for inversions (see notes above - Outer inversions).
     * outer_qry: Outer query region for inversions (see notes above - Outer inversions).
-    * align_index: List of "align_index" values from the alignment table this variant was derived from. Intra-alignment
-        variants will have a single value. Inter-alignment variants will have 0 or more values and will exlude anchors.
-        Indexes will be in order of the alignment chain from left to right in reference orientation.
-    * ref_templ: List templated sites (see notes above - Coordinates). Each templated site is a reference coordinate
-        that part of the variant was templated from. For insertions, this may be a single region that was duplicated
-        (insertion call itself indicates where it was inserted). For complex variants, this may be a list of regions
-        that were duplicated or rearranged to form the variant. Field "is_rev" is true when the template is inverted
-        relative to the reference (assembly sequence orientation does not affect this value).
+    * templ_res: Template resolution flag. True if the variant is aligned across its segments, False if variant
+        segments are unaligned. Common in complex variants where smaller template switches are left unaligned.
+    * align_source: List of "align_index" values from the alignment table this variant was derived from.
+        Intra-alignment variants will have a single value. Inter-alignment variants will have 0 or more values and will
+        exlude anchors. Indexes will be in order of the alignment chain from left to right in reference orientation.
     * seg: A list of segments belonging to this variant. Each element links a reference region and query region. Field
         "is_rev" is true when the segment is inverted relative to the reference (assembly sequence orientation does not
         affect this value).
     * dup: List of duplicated reference regions where a precise query coordinate is unknown.
     * seg_n: Number of distinct segments in a complex variant.
+    * trace_qry: Formatted string tracing the query structure of a complex variant.
+    * trace_ref: Formatted string tracing the reference structure of a complex variant.
     * align_gap: Difference in the number of bases between the query and reference sequences for inter-alignment
         inversions. Large numbers suggest a more complex arrangement than a balanced inversion.
     * var_index: A unique index for variants within a callset.
+    * hom_ref: Perfect homology flanking the variant breakpoints in reference coordinates. Field "up" is the number of
+        homologous bases upstream of the variant and "dn" is the number downstream.
+    * hom_qry: Perfect homology flanking the variant breakpoints in query coordinates. Fields are the same as
+        "hom_ref".
     * derived: ID of a variant this variant was derived from (where applicable). If non-null, then "DERIVED" must also
         be present in "filter".
     * discord: IDs of variants this variant was discordant with. For example, a small variant inside a larger deletion
@@ -176,6 +190,12 @@ Fields:
         that are part of a larger variant (i.e. duplicated region of an insertion or complex event). If not empty, then
         "INNER" must also be present in "filter".
     * seq: Variant sequence in reference orientation. Null if not defined (never "*" or other placeholders).
+
+Merge fields:
+
+The last three fields ("mg_src", "mg_stat", and "mg_src_lead") are only present in merged callsets (i.e. haplotypes
+merged into a sample callset by `pav3.workflow.call.merge_haplotypes`). They are absent from per-haplotype callsets.
+
     * mg_src: List of source entries for a merged variant, one per haplotype that contributed to the merged call.
         This is a PAV-specific reshaping of the merge source struct emitted by agglovar: the agglovar source-name and
         metadata fields are resolved into explicit "sample" and "hap" fields (the metadata is dropped once consumed).
@@ -186,6 +206,30 @@ Fields:
             * hap: Haplotype the source variant came from.
             * var_index: Index of the source variant within its callset ("var_index" of the source table).
             * var_id: ID of the source variant within its callset.
+
+    * mg_stat: List of merge statistics emitted by agglovar, one per source variant merged into the lead variant
+        (i.e. one fewer entry than "mg_src"). The struct fields are the join statistics computed by the pairwise
+        overlap engine. The struct does not vary by variant type: agglovar always emits the full set of default join
+        columns, and a statistic that a merge does not compute is emitted as a null rather than being dropped from
+        the struct. The fields are:
+
+            * ro: Reciprocal overlap with the lead variant.
+            * offset_dist: Breakpoint offset distance (max of the start and end offsets) in bp.
+            * offset_prop: Offset distance over the smaller of the two variant lengths.
+            * size_ro: Reciprocal size overlap (size of the smaller over the size of the larger).
+            * match_prop: Proportion of matched bases in an alignment of the two variant sequences. Only computed
+                when the merge parameters request sequence matching ("match_prop_min"), which for the defaults in
+                `pav3.const.DEFAULT_MERGE_PARAMS` is INS/DEL and CPX. Null for SNV, INV, and DUP.
+            * weight: Weight assigned to the match by the merge parameters, which chooses among candidate matches.
+
+        The struct is fixed by the merge parameters, not by PAV, so non-default merge parameters can change it. The
+        one field the defaults use but never report is "seg_ro" (segment reciprocal overlap, used by the CPX merge):
+        agglovar computes it to filter candidate matches but does not carry it into the output statistics.
+
+    * mg_src_lead: Index into "mg_src" of the lead (representative) source entry. The lead source is the variant whose
+        columns were carried into the merged record, so
+        `pl.col('mg_src').list.get(pl.col('mg_src_lead'))` identifies the callset and variant the merged record's
+        coordinates, sequence, and annotations came from.
 """
 
 

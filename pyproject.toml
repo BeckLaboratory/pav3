@@ -17,6 +17,7 @@ dependencies = [
     "frozendict>=2.4.6",
     "hmmlearn>=0.3.3",
     "intervaltree>=3.1.0",
+    "matplotlib>=3.11.0",
     "numpy>=2.3.2",
     "polars[numpy,pandas,pyarrow]>=1.41.0",
     "pyarrow>=21.0.0",
@@ -24,15 +25,11 @@ dependencies = [
     "scipy>=1.16.1",
     "scipy-stubs==1.16.1.1",
     "snakemake>=9.9.0",
+    "xlsxwriter>=3.2.9",
 ]
 
 [project.scripts]
 pav3 = "pav3.cli:main"
-
-[project.optional-dependencies]
-gfig = [
-    "matplotlib>=3.10.8",
-]
 
 [pav.urls]
 Homepage = "https://github.com/BeckLaboratory/pav"

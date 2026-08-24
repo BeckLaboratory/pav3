@@ -93,7 +93,9 @@ def color_to_ucsc_string(
     """
     Convert a matplotlib color to a UCSC color string.
 
-    :param color: Tuple of RGB values (0.0-1.0) or a dict with tuples of RGB values.
+    :param color: Tuple of RGB values (0.0-1.0) or a dict with tuples of RGB values. Tuples may carry a trailing
+        alpha value (i.e. RGBA, as matplotlib colormaps return), which is dropped. UCSC itemRgb fields accept only
+        three components.
 
     :returns: Color string (if `color` is a tuple) or color dictionary of strings (if `color` is a dictionary of
         tuple values).
@@ -101,8 +103,8 @@ def color_to_ucsc_string(
 
     if isinstance(color, dict):
         return {
-            key: ','.join((str(int(color_val * 255)) for color_val in color_val_tup))
+            key: ','.join((str(int(color_val * 255)) for color_val in color_val_tup[:3]))
             for key, color_val_tup in color.items()
         }
 
-    return ','.join((str(int(color_val * 255)) for color_val in color))
+    return ','.join((str(int(color_val * 255)) for color_val in color[:3]))

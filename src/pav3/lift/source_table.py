@@ -21,7 +21,7 @@ import polars as pl
 from ..io import PlainOrGzFile
 from ..region import region_from_string
 from .errors import LiftInputError
-from .format import Format, detect_format, parse_format
+from ..format import Format, detect_format, parse_format
 
 logger = logging.getLogger(__name__)
 

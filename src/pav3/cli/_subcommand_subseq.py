@@ -17,8 +17,8 @@ from ._common_opt import (
     _add_opt_subseq_extra,
     _add_opt_version,
 )
-from ._lift_cli import build_source_table, resolve_output, run_guarded
-from ._returncode import ExitCode
+from ._lift_cli import build_source_table, resolve_output
+from ._returncode import ExitCode, run_guarded
 
 logger = logging.getLogger(__name__)
 

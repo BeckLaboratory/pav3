@@ -1,4 +1,9 @@
-"""File format detection and parsing for the lift and subseq tools."""
+"""File format detection and parsing for table and sequence files.
+
+Formats are named on the command line (e.g. -I, -O, -Q) or detected from a filename extension. A format name may
+end with "GZ" to indicate a compressed file (e.g. "BEDGZ"), which corresponds to a ".gz" filename extension.
+Formats that cannot be compressed (Parquet and Excel) reject both the "GZ" name suffix and the ".gz" extension.
+"""
 
 __all__ = [
     'Format',
@@ -6,6 +11,7 @@ __all__ = [
     'detect_format',
     'TEXT_TABLE_FORMATS',
     'SEQ_FORMATS',
+    'UNCOMPRESSED_FORMATS',
 ]
 
 import enum
@@ -21,6 +27,7 @@ class Format(enum.Enum):
     TSV = 'TSV'
     CSV = 'CSV'
     PARQUET = 'PARQUET'
+    XLSX = 'XLSX'
     FASTA = 'FASTA'
     FASTQ = 'FASTQ'
 
@@ -31,7 +38,10 @@ TEXT_TABLE_FORMATS = {Format.TXT, Format.BED, Format.TSV, Format.CSV}
 SEQ_FORMATS = {Format.FASTA, Format.FASTQ}
 """Sequence formats (may be bgzip-compressed)."""
 
-_NAME_MAP = {fmt.value: fmt for fmt in Format}
+UNCOMPRESSED_FORMATS = {Format.PARQUET, Format.XLSX}
+"""Formats with built-in compression that are never gzip-compressed."""
+
+_NAME_MAP = {fmt.value: fmt for fmt in Format} | {'EXCEL': Format.XLSX}
 
 _EXT_MAP = {
     'txt': Format.TXT,
@@ -39,6 +49,7 @@ _EXT_MAP = {
     'tsv': Format.TSV,
     'csv': Format.CSV,
     'parquet': Format.PARQUET,
+    'xlsx': Format.XLSX,
     'fasta': Format.FASTA,
     'fa': Format.FASTA,
     'fna': Format.FASTA,
@@ -51,6 +62,7 @@ def parse_format(fmt_str: str) -> tuple[Format, bool]:
     """Parse a format option string (from -I, -O, or -Q).
 
     The value is case-insensitive and may end with "GZ" to indicate gzip/bgzip compression (e.g. "TXTGZ", "bedgz").
+    "EXCEL" is accepted as an alias for "XLSX".
 
     :param fmt_str: Format string.
 
@@ -72,8 +84,8 @@ def parse_format(fmt_str: str) -> tuple[Format, bool]:
 
     fmt = _NAME_MAP[value]
 
-    if is_gz and fmt == Format.PARQUET:
-        raise ValueError('Parquet cannot be gzip-compressed')
+    if is_gz and fmt in UNCOMPRESSED_FORMATS:
+        raise ValueError(f'{fmt.value} cannot be gzip-compressed')
 
     return fmt, is_gz
 
@@ -85,8 +97,8 @@ def detect_format(filename: str | Path) -> Optional[tuple[Format, bool]]:
 
     :returns: A tuple of (format, is_gz), or `None` if the format cannot be determined.
 
-    :raises ValueError: If a gzip-compressed Parquet file is indicated (e.g. "x.parquet.gz"); Parquet is not
-        gzip-compressed.
+    :raises ValueError: If a gzip-compressed Parquet or Excel file is indicated (e.g. "x.parquet.gz"); these
+        formats are not gzip-compressed.
     """
     name = str(filename).strip().lower()
     is_gz = False
@@ -104,7 +116,7 @@ def detect_format(filename: str | Path) -> Optional[tuple[Format, bool]]:
     if fmt is None:
         return None
 
-    if is_gz and fmt == Format.PARQUET:
-        raise ValueError(f'Parquet files cannot be gzip-compressed: {filename}')
+    if is_gz and fmt in UNCOMPRESSED_FORMATS:
+        raise ValueError(f'{fmt.value} files cannot be gzip-compressed: {filename}')
 
     return fmt, is_gz

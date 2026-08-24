@@ -1642,6 +1642,7 @@ dependencies = [
     { name = "frozendict" },
     { name = "hmmlearn" },
     { name = "intervaltree" },
+    { name = "matplotlib" },
     { name = "numpy" },
     { name = "polars", extra = ["numpy", "pandas", "pyarrow"] },
     { name = "pyarrow" },
@@ -1649,11 +1650,7 @@ dependencies = [
     { name = "scipy" },
     { name = "scipy-stubs" },
     { name = "snakemake" },
-]
-
-[package.optional-dependencies]
-gfig = [
-    { name = "matplotlib" },
+    { name = "xlsxwriter" },
 ]
 
 [package.dev-dependencies]
@@ -1688,7 +1685,7 @@ requires-dist = [
     { name = "frozendict", specifier = ">=2.4.6" },
     { name = "hmmlearn", specifier = ">=0.3.3" },
     { name = "intervaltree", specifier = ">=3.1.0" },
-    { name = "matplotlib", marker = "extra == 'gfig'", specifier = ">=3.10.8" },
+    { name = "matplotlib", specifier = ">=3.11.0" },
     { name = "numpy", specifier = ">=2.3.2" },
     { name = "polars", extras = ["numpy", "pandas", "pyarrow"], specifier = ">=1.41.0" },
     { name = "pyarrow", specifier = ">=21.0.0" },
@@ -1696,8 +1693,8 @@ requires-dist = [
     { name = "scipy", specifier = ">=1.16.1" },
     { name = "scipy-stubs", specifier = "==1.16.1.1" },
     { name = "snakemake", specifier = ">=9.9.0" },
+    { name = "xlsxwriter", specifier = ">=3.2.9" },
 ]
-provides-extras = ["gfig"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -3206,6 +3203,15 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/a0/4f/ac12fda57a55068a094ec42851fb0a40e8489d8941863d517452de62e507/wrapt-2.2.2-cp314-cp314t-win_amd64.whl", hash = "sha256:d09db0f7e8357060d3c38fc22a018aba683a796bf184360fd1a58f6fc180dc77", size = 82462, upload-time = "2026-06-20T23:49:21.631Z" },
     { url = "https://files.pythonhosted.org/packages/48/a7/df732dac86d9b2027c56bd163dbc883e037b16c3469614752e148d219c61/wrapt-2.2.2-cp314-cp314t-win_arm64.whl", hash = "sha256:f32fe639c39561ccc187bcae17e9271be0eb45f1c2952510d2f29b33ab577347", size = 81182, upload-time = "2026-06-20T23:49:23.199Z" },
     { url = "https://files.pythonhosted.org/packages/6e/d2/6317eb6d4554855bbf12d61857774af34747bf88a42c19bf306de67e2fa3/wrapt-2.2.2-py3-none-any.whl", hash = "sha256:5bad217350f19ce99ca5b5e71d406765ea86fe541628426772b657375ee1c048", size = 61460, upload-time = "2026-06-20T23:49:42.966Z" },
+]
+
+[[package]]
+name = "xlsxwriter"
+version = "3.2.9"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/46/2c/c06ef49dc36e7954e55b802a8b231770d286a9758b3d936bd1e04ce5ba88/xlsxwriter-3.2.9.tar.gz", hash = "sha256:254b1c37a368c444eac6e2f867405cc9e461b0ed97a3233b2ac1e574efb4140c", size = 215940, upload-time = "2025-09-16T00:16:21.63Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/3a/0c/3662f4a66880196a590b202f0db82d919dd2f89e99a27fadef91c4a33d41/xlsxwriter-3.2.9-py3-none-any.whl", hash = "sha256:9a5db42bc5dff014806c58a20b9eae7322a134abb6fce3c92c181bfb275ec5b3", size = 175315, upload-time = "2025-09-16T00:16:20.108Z" },
 ]
 
 [[package]]

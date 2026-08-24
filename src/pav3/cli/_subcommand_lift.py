@@ -11,8 +11,8 @@ from typing import Optional
 from ..lift import lift_align, lift_pav
 from ..util import init_logger
 from ._common_opt import _add_opt_lift_common, _add_opt_reference, _add_opt_version
-from ._lift_cli import build_source_table, resolve_output, run_guarded
-from ._returncode import ExitCode
+from ._lift_cli import build_source_table, resolve_output
+from ._returncode import ExitCode, run_guarded
 
 logger = logging.getLogger(__name__)
 

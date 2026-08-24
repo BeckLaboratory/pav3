@@ -6,7 +6,7 @@ the subcommand modules thin wrappers over the :mod:`pav3.lift` API.
 
 import logging
 import sys
-from typing import Callable, Optional
+from typing import Optional
 
 import polars as pl
 
@@ -25,8 +25,7 @@ from ..lift import (
     source_table_from_list,
     source_table_from_str,
 )
-from ..lift.errors import LiftConfigError, LiftError, LiftInputError, LiftOutputError, LiftUsageError
-from ._returncode import ExitCode
+from ..lift.errors import LiftUsageError
 
 logger = logging.getLogger(__name__)
 
@@ -138,37 +137,3 @@ def resolve_output(
 
     except ValueError as e:
         raise LiftUsageError(str(e)) from e
-
-
-def run_guarded(action: Callable[[], None]) -> int:
-    """Run an action, mapping exceptions to exit codes.
-
-    :param action: Zero-argument callable that performs the operation.
-
-    :returns: An integer exit code.
-    """
-    try:
-        action()
-    except LiftUsageError as e:
-        logger.error('%s', e)
-        return int(ExitCode.USAGE)
-    except LiftConfigError as e:
-        logger.error('%s', e)
-        return int(ExitCode.CONFIG)
-    except LiftOutputError as e:
-        logger.error('%s', e)
-        return int(ExitCode.OUTPUT)
-    except (LiftInputError, FileNotFoundError) as e:
-        logger.error('%s', e)
-        return int(ExitCode.INPUT)
-    except LiftError as e:
-        logger.error('%s', e)
-        return int(ExitCode.ERROR)
-    except ValueError as e:
-        logger.error('%s', e)
-        return int(ExitCode.ERROR)
-    except Exception:
-        logger.exception('Unexpected error')
-        return int(ExitCode.ERROR)
-
-    return int(ExitCode.OK)

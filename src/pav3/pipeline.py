@@ -25,6 +25,7 @@ __all__ = [
 
 import importlib.resources
 import itertools
+import logging
 import os
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Optional
@@ -39,6 +40,8 @@ import agglovar
 
 from .params import PavParams
 from .seq import fa_to_record_iter, gfa_to_record_iter
+
+logger = logging.getLogger(__name__)
 
 
 def expand_pattern(
@@ -150,7 +153,7 @@ def get_hap_list(
     ]
 
     if len(hap_list) == 0:
-        raise ValueError(f'No haplotypes found for assembly {asm_name}: All hap columns are missing or empty')
+        logger.warning(f'No haplotypes found for assembly {asm_name}: All hap columns are missing or empty')
 
     return hap_list
 
@@ -637,7 +640,7 @@ def read_assembly_table(
     if pav_config is None:
         pav_config = dict()
 
-    ignore_cols = set(pav_config.get('ignore_cols', set())) | {'config', 'name'}
+    ignore_cols = set(pav_config.get('ignore_cols', set())) | {'config', 'name', 'sex'}
 
     # Read table
     filename_lower = str(assembly_table_path).lower()
@@ -741,7 +744,7 @@ def read_assembly_table(
         hap_col_map[hap] = col
 
     if unknown_cols:
-        col_list = ', '.join(unknown_cols[:5]) + '...' if len(unknown_cols) > 5 else ''
+        col_list = ', '.join(unknown_cols[:5]) + ('...' if len(unknown_cols) > 5 else '')
         raise ValueError(f'Unknown columns in assembly table: {col_list}: {assembly_table_path}')
 
     if not hap_list:

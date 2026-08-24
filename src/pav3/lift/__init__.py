@@ -38,7 +38,7 @@ __all__ = [
     'subseq_align',
 ]
 
-from .format import Format, detect_format, parse_format
+from ..format import Format, detect_format, parse_format
 
 from .source_table import (
     SOURCE_SCHEMA,

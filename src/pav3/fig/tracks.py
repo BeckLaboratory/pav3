@@ -6,6 +6,7 @@ __all__ = [
     'call_hap_invdupcpx',
     'align',
     'set_default_as_types',
+    'write_track_bed',
 
 ]
 
@@ -26,9 +27,18 @@ from . import const as fig_const
 from . import util as fig_util
 from ..call import expr
 
+from .. import schema
 from .. import util
 
 TRACK_RESOURCE = 'pav3.data.tracks'
+
+MG_STAT_FIELDS: tuple[str, ...] = tuple(
+    struct_field.name for struct_field in schema.VARIANT['mg_stat'].inner.fields
+)
+"""Merge statistic fields in the order they are formatted into the "mg_stat" track column."""
+
+CONTROL_CHAR_PATTERN = r'[\x00-\x1f\x7f]'
+"""Control characters (including tab, newline, and carriage return) stripped from BED track fields."""
 
 ALIGN_TRACK_TABLE_FILENAME = 'alignment_track_fields.tsv'
 
@@ -60,6 +70,43 @@ VARTYPE_FMT = {
 
 
 #
+# Track output
+#
+
+def write_track_bed(
+        chunks: Iterable[pl.LazyFrame],
+        bed_path: Path | str,
+) -> int:
+    """Write track chunks to a BED file for conversion to BigBed.
+
+    Each chunk is collected and appended in turn, so peak memory is bounded by the largest chunk
+    instead of the whole track. The track builders emit one chunk per reference chromosome in the
+    order "bedToBigBed" expects (chromosomes sorted lexicographically, records sorted by position
+    within each chromosome), so appending chunks in order yields a correctly sorted BED.
+
+    :param chunks: Track chunks in output order. Every chunk must have the same columns, already
+        cast to strings by `set_default_as_types`.
+    :param bed_path: Path of the BED file to write.
+
+    :return: Number of records written.
+    """
+    n_record = 0
+
+    with open(bed_path, 'wb') as out_file:
+        for chunk in chunks:
+            df_chunk = chunk.collect()
+
+            if df_chunk.height == 0:
+                continue
+
+            df_chunk.write_csv(out_file, separator='\t', include_header=False)
+
+            n_record += df_chunk.height
+
+    return n_record
+
+
+#
 # Variant tracks
 #
 
@@ -69,8 +116,15 @@ def call_hap_insdelsnv(
         field_path: Optional[Path | str] = None,
         thick_lines: bool = False,
         center_ins: bool = True,
-) -> tuple[pl.LazyFrame, list[str]]:
+) -> tuple[Iterator[pl.LazyFrame], list[str]]:
     """Create a track of variant calls.
+
+    The track is returned as one chunk per reference chromosome in output order (see
+    `write_track_bed`) rather than as a single frame. Sorting is a blocking operation, so a
+    whole-track frame must be fully materialized before it can be written, and every column is
+    converted to a string for BED output, which costs far more than the source table (each string
+    column carries an 8-byte offset per row). Chunking by chromosome bounds peak memory to the
+    largest chromosome.
 
     :param callset_def: Callset definition.
     :param df_fai: Reference table with "chrom" and "len" columns.
@@ -78,7 +132,7 @@ def call_hap_insdelsnv(
     :param thick_lines: If True, draw variants with thick lines. Otherwise, use thick for insertion site.
     :param center_ins: If True, center insertions on the variant position. Otherwise, use the start position.
 
-    :return: Tuple of variant LazyFrame and AS file lines.
+    :return: Tuple of an iterator over per-chromosome variant LazyFrames and AS file lines.
     """
     if isinstance(df_fai, pl.DataFrame):
         df_fai = df_fai.lazy()
@@ -112,7 +166,6 @@ def call_hap_insdelsnv(
 
     df = (
         pl.scan_parquet(callset_path)
-        .with_row_index('_index')
         .filter(*filter_list)
         .with_columns((pl.col('filter').list.len() == 0).alias('_is_pass'))
         .join(color_table, on=['vartype', '_is_pass'], how='left')
@@ -137,14 +190,10 @@ def call_hap_insdelsnv(
         vartype == 'snv',
     )
 
-    df = (
-        df
-        .sort('chrom', 'pos', 'end', '_index')
-        .drop(
-            '_is_pass', '_chrom_len', '_index',
-            'qry_id', 'qry_pos', 'qry_end', 'qry_rev',
-            strict=False,
-        )
+    df = df.drop(
+        '_is_pass', '_chrom_len',
+        'qry_id', 'qry_pos', 'qry_end', 'qry_rev',
+        strict=False,
     )
 
     # Check columns
@@ -160,8 +209,7 @@ def call_hap_insdelsnv(
         pl.col('field').is_in(col_set)
     )
 
-    df = df.select(df_as.select('field').to_series().to_list())
-    df = set_default_as_types(df, df_as, strict=True)
+    chunk_iter = _chrom_chunks(df, df_as, _chrom_list(callset_path))
 
     # AS file lines
     as_lines = [
@@ -175,14 +223,24 @@ def call_hap_insdelsnv(
         ')'
     ]
 
-    return df, as_lines
+    return chunk_iter, as_lines
 
 
 def call_hap_invdupcpx(
         callset_def: dict[str, str | Path],
         df_fai: pl.LazyFrame | pl.DataFrame,
         field_path: Optional[Path | str] = None,
-) -> tuple[pl.LazyFrame, list[str]]:
+) -> tuple[Iterator[pl.LazyFrame], list[str]]:
+    """Create a track of inversion, duplication, and complex variant calls.
+
+    See `call_hap_insdelsnv` for why the track is chunked by chromosome.
+
+    :param callset_def: Callset definition.
+    :param df_fai: Reference table with "chrom" and "len" columns.
+    :param field_path: Path to field table describing track fields.
+
+    :return: Tuple of an iterator over per-chromosome variant LazyFrames and AS file lines.
+    """
     if isinstance(df_fai, pl.DataFrame):
         df_fai = df_fai.lazy()
 
@@ -214,7 +272,7 @@ def call_hap_invdupcpx(
                 pl.lit('REF='),
                 pl.col('chrom'), pl.lit(':'), pl.col('pos'), pl.lit('-'), pl.col('end'),
                 pl.lit(' - QRY='),
-                expr.qry_region()
+                expr.qry_region_expr()
             ).alias('inv_inner'),
             pl.concat_str(
                 pl.lit('REF='),
@@ -361,7 +419,6 @@ def call_hap_invdupcpx(
             pl.col('end_thick').fill_null('end'),
         )
         .join(color_table, on=['vartype', '_is_pass'], how='left')
-        .sort('chrom', 'pos', 'end')
     )
 
     df = (
@@ -383,8 +440,12 @@ def call_hap_invdupcpx(
         pl.col('field').is_in(col_set)
     )
 
-    df = df.select(df_as.select('field').to_series().to_list())
-    df = set_default_as_types(df, df_as, strict=True)
+    chunk_iter = _chrom_chunks(
+        df, df_as,
+        _chrom_list(
+            *(callset_path[key] for key in ('inv', 'dup', 'cpx'))
+        )
+    )
 
     # AS file lines
     as_lines = [
@@ -398,7 +459,7 @@ def call_hap_invdupcpx(
         ')'
     ]
 
-    return df, as_lines
+    return chunk_iter, as_lines
 
 
 #
@@ -475,7 +536,7 @@ def align(
                     .otherwise(color_fail)
                 ).alias('color'),
                 pl.lit(i).alias('_align_def_index'),
-                expr.qry_region().alias('qry_region'),
+                expr.qry_region_expr().alias('qry_region'),
             )
         )
 
@@ -497,7 +558,7 @@ def align(
                 'qry_order',
             ).alias('id'),
             (pl.col('match_prop') * 1000).clip(0.0, 1000.0).cast(pl.Int32).alias('track_score'),
-            pl.col('rg').fill_null('').cast(pl.String).alias('rg'),
+            pl.col('rg').fill_null('.').cast(pl.String).alias('rg'),
             (pl.when('is_rev').then(pl.lit('-')).otherwise(pl.lit('+'))).cast(pl.String).alias('strand'),
         )
         .drop('_align_def_index', '_index', 'qry_id', 'qry_pos', 'qry_end', 'is_rev')
@@ -632,6 +693,12 @@ def set_default_as_types(
     filled with an appropriate default value for the type ("." for string/char, 0 for integer,
     and 0.0 for float types).
 
+    Control characters are stripped from string-typed columns. A tab or newline reaching a BED
+    field breaks "bedToBigBed -tab", which splits records on raw tabs and newlines and knows
+    nothing about the CSV quoting Polars applies when writing such a value. An embedded newline
+    splits one record across two lines and surfaces as "Expecting N words line L ... got M",
+    where M is the 1-based index of the offending field.
+
     :param df: Table of the BED track table to be converted to BigBed format.
     :param df_as: Table of the data types including columns "field" (column name in `df` and
         "type" (AutoSQL type as a string).
@@ -683,11 +750,75 @@ def set_default_as_types(
         if default_value is None:
             raise ValueError(f'Unsupported column type in AS table: {as_type} (column "{col_name}")')
 
+        col_expr = pl.col(col_name).cast(pl.String)
+
+        if bracket_pattern.sub('', as_type) in {'string', 'lstring', 'char'}:
+            col_expr = col_expr.str.replace_all(CONTROL_CHAR_PATTERN, ' ')
+
         df = df.with_columns(
-            pl.col(col_name).cast(pl.String).fill_null(default_value)
+            col_expr.fill_null(default_value)
         )
 
     return df
+
+
+def _chrom_list(
+        *callset_paths: Path | str,
+) -> list[str]:
+    """Get the sorted list of reference chromosomes present in one or more callsets.
+
+    The list is taken from the callsets rather than from the reference index so that no records are
+    silently dropped when a track is chunked by chromosome. Chromosomes are sorted lexicographically
+    to match the order "bedToBigBed" expects.
+
+    :param callset_paths: Paths of callset Parquet files. Each must have a "chrom" column.
+
+    :return: Sorted list of chromosome names.
+    """
+    chrom_set: set[str] = set()
+
+    for callset_path in callset_paths:
+        chrom_set |= set(
+            pl.scan_parquet(callset_path)
+            .select(pl.col('chrom').unique().drop_nulls())
+            .collect()
+            .to_series()
+            .to_list()
+        )
+
+    return sorted(chrom_set)
+
+
+def _chrom_chunks(
+        df: pl.LazyFrame,
+        df_as: pl.DataFrame,
+        chrom_list: Iterable[str],
+) -> Iterator[pl.LazyFrame]:
+    """Split a track into one sorted chunk per chromosome.
+
+    Records are sorted by position within each chromosome and chunks are emitted in chromosome
+    order, which together give the record order "bedToBigBed" expects. The sort is stable, so
+    records tied on position keep their order in the source callset.
+
+    :param df: Track table before the AS field selection.
+    :param df_as: AS field table filtered to the fields present in `df`.
+    :param chrom_list: Chromosomes in output order.
+
+    :return: Iterator over per-chromosome track chunks.
+    """
+    field_list = df_as.select('field').to_series().to_list()
+
+    for chrom in chrom_list:
+        yield set_default_as_types(
+            (
+                df
+                .filter(pl.col('chrom') == chrom)
+                .sort('pos', 'end', maintain_order=True)
+                .select(field_list)
+            ),
+            df_as,
+            strict=True,
+        )
 
 
 def _read_df_as(
@@ -755,7 +886,7 @@ def _var_fields(
         pl.col('filter').list.join(',').cast(pl.String).alias('filter'),
         pl.lit(asm_name).alias('asm_name'),
         pl.lit(hap).alias('hap'),
-        expr.qry_region().alias('qry_region'),
+        expr.qry_region_expr().alias('qry_region'),
         pl.col('align_source').cast(pl.List(pl.String)).list.join(',').cast(pl.String).alias('align_source'),
         pl.lit(1000).alias('track_score'),
     ]
@@ -835,19 +966,61 @@ def _var_fields(
             ).list.join(',')
         )
 
-    if 'seq' in col_set:
+    if 'seg' in col_set:
         field_list.append(
-            pl.when(pl.col('seq').str.len_chars() > 50)
-            .then(
+            pl.col('seg').fill_null([]).list.eval(
                 pl.concat_str(
-                    pl.col('seq').str.slice(0, 25),
-                    pl.lit('...('),
-                    pl.col('seq').str.len_chars() - 50,
-                    pl.lit(')...'),
-                    pl.col('seq').str.slice(-25, 25),
+                    pl.element().struct.field('chrom'),
+                    pl.lit(':'),
+                    pl.element().struct.field('pos'),
+                    pl.lit('-'),
+                    pl.element().struct.field('end'),
+                    pl.lit('('),
+                    (
+                        pl.when(pl.element().struct.field('is_rev'))
+                        .then(pl.lit('-'))
+                        .otherwise(pl.lit('+'))
+                    ),
+                    pl.lit(')>'),
+                    pl.element().struct.field('qry_id'),
+                    pl.lit(':'),
+                    pl.element().struct.field('qry_pos'),
+                    pl.lit('-'),
+                    pl.element().struct.field('qry_end'),
                 )
-            )
-            .otherwise('seq')
+            ).list.join(',')
+        )
+
+    # Merge fields (merged callsets only, see pav3.schema.VARIANT)
+    if 'mg_src' in col_set:
+        field_list.append(
+            pl.col('mg_src').fill_null([]).list.eval(
+                pl.concat_str(
+                    pl.element().struct.field('sample'),
+                    pl.lit(':'),
+                    pl.element().struct.field('hap'),
+                    pl.lit(':'),
+                    pl.element().struct.field('var_id'),
+                )
+            ).list.join(',')
+        )
+
+    if 'mg_stat' in col_set:
+        stat_expr_list: list[pl.Expr] = []
+
+        for stat_field in MG_STAT_FIELDS:
+            if stat_expr_list:
+                stat_expr_list.append(pl.lit(':'))
+
+            stat_expr_list.append(pl.element().struct.field(stat_field))
+
+        field_list.append(
+            pl.col('mg_stat').fill_null([]).list.eval(
+                # Statistics a merge does not compute are null (e.g. "match_prop" for variant types merged without
+                # sequence matching). "ignore_nulls" leaves an empty slot between separators instead of nulling the
+                # whole entry, which would drop it from the joined list and misalign the remaining fields.
+                pl.concat_str(*stat_expr_list, ignore_nulls=True)
+            ).list.join(',')
         )
 
     return field_list
