@@ -28,16 +28,6 @@ dependencies = [
     "xlsxwriter>=3.2.9",
 ]
 
-[project.scripts]
-pav3 = "pav3.cli:main"
-
-[pav.urls]
-Homepage = "https://github.com/BeckLaboratory/pav"
-Documentation = "https://pav3.readthedocs.io"
-Repository = "https://github.com/BeckLaboratory/pav"
-Issues = "https://github.com/BeckLaboratory/pav/issues"
-Changelog = "https://github.com/BeckLaboratory/pav/blob/master/CHANGELOG.md"
-
 keywords = [
     "variant calling",
     "variant discovery",
@@ -63,6 +53,16 @@ authors = [
 maintainers = [
     {name = "Peter Audano", email = "peter.audano@jax.org"}
 ]
+
+[project.scripts]
+pav3 = "pav3.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/BeckLaboratory/pav3"
+Documentation = "https://pav3.readthedocs.io"
+Repository = "https://github.com/BeckLaboratory/pav3"
+Issues = "https://github.com/BeckLaboratory/pav3/issues"
+Changelog = "https://github.com/BeckLaboratory/pav3/blob/main/CHANGELOG.md"
 
 [dependency-groups]
 dev = [

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# Push a built PAV3 Docker image to its registry repository.
+# Push a built PAV3 Docker image to the GitHub Container Registry (GHCR).
 #
 # Tags the locally-built "pav3:<version>" image as "<repo>:<version>" (and, by
 # default, "<repo>:latest") and pushes both. Build the image first with
@@ -8,6 +8,15 @@
 #
 # Runs correctly regardless of the current working directory: the PAV directory
 # is found relative to this script's location unless overridden with --dir.
+#
+# Authentication: if a token is available (GHCR_TOKEN or --token-file), the
+# script logs in to the registry before pushing. Without one it assumes a prior
+# "docker login" and lets "docker push" report any failure. The token is passed
+# on stdin and is never placed in the command line or echoed.
+#
+# GHCR requires the repository path to be lower case; it is lower-cased here so
+# that "ghcr.io/BeckLaboratory/pav3" cannot fail with "could not parse
+# reference".
 #
 # Usage:
 #   files/container/deploy_docker [options] [-- docker push args...]
@@ -17,6 +26,12 @@
 #                          the location auto-detected from this script.
 #   -p, --pav-version VER  PAV version to push (e.g. 3.0.0.dev22). Defaults to
 #                          the newest wheel in <PAV_DIR>/dist.
+#   -r, --repo REPO        Destination repository. Default: the GHCR repository
+#                          below. Useful for rehearsing a push against a
+#                          personal namespace (e.g. ghcr.io/<user>/pav3-test).
+#   -u, --user USER        Registry username for login. Default: $GHCR_USER.
+#   -T, --token-file FILE  Read the registry token from FILE instead of
+#                          $GHCR_TOKEN. A trailing newline is stripped.
 #   -L, --no-latest        Do not also push the "latest" tag.
 #   -n, --pretend          Print the docker commands without running them.
 #   -v, --verbose          Print commands as they run.
@@ -28,8 +43,8 @@
 
 set -euo pipefail
 
-# Destination repository on the registry (Docker Hub by default).
-DOCKER_REPO="becklab/pav3"
+# Destination repository on the registry. Override with -r/--repo.
+DOCKER_REPO="ghcr.io/becklaboratory/pav3"
 
 # Print the leading comment block (everything after the shebang up to the first
 # non-comment line) as help text.
@@ -64,6 +79,9 @@ SCRIPT_DIR="$(cd -P "$(dirname "$SCRIPT_SOURCE")" >/dev/null 2>&1 && pwd)"
 
 DIR_ARG=""
 PAV_VERSION=""
+REPO_ARG=""
+USER_ARG=""
+TOKEN_FILE=""
 NOLATEST=""
 PRETEND=""
 VERBOSE=""
@@ -78,6 +96,15 @@ while [[ $# -gt 0 ]]; do
         -p|--pav-version)
             [[ $# -ge 2 ]] || err "$1 requires an argument"
             PAV_VERSION="$2"; shift 2 ;;
+        -r|--repo)
+            [[ $# -ge 2 ]] || err "$1 requires an argument"
+            REPO_ARG="$2"; shift 2 ;;
+        -u|--user)
+            [[ $# -ge 2 ]] || err "$1 requires an argument"
+            USER_ARG="$2"; shift 2 ;;
+        -T|--token-file)
+            [[ $# -ge 2 ]] || err "$1 requires an argument"
+            TOKEN_FILE="$2"; shift 2 ;;
         -L|--no-latest) NOLATEST=1; shift ;;
         -n|--pretend)   PRETEND=1; shift ;;
         -v|--verbose)   VERBOSE=1; shift ;;
@@ -147,6 +174,22 @@ fi
 LOCAL_IMAGE="pav3:${PAV_VERSION}"
 
 
+### Resolve the destination repository ###
+
+if [[ -n "$REPO_ARG" ]]; then
+    DOCKER_REPO="$REPO_ARG"
+fi
+
+# Registries reject upper-case repository paths ("could not parse reference"),
+# so normalize before the reference is ever constructed.
+DOCKER_REPO="$(printf '%s' "$DOCKER_REPO" | tr '[:upper:]' '[:lower:]')"
+
+# Registry host is the first path segment when it looks like a hostname
+# (contains "." or ":"), otherwise the reference is a Docker Hub short name.
+REGISTRY_HOST="${DOCKER_REPO%%/*}"
+[[ "$REGISTRY_HOST" == *[.:]* ]] || REGISTRY_HOST="docker.io"
+
+
 ### Verify the local image exists ###
 
 if [[ -z "$PRETEND" ]] && ! docker image inspect "$LOCAL_IMAGE" >/dev/null 2>&1; then
@@ -159,7 +202,45 @@ fi
 progress "PAV directory:  ${PAV_DIR}"
 progress "PAV version:    ${PAV_VERSION}"
 progress "Local image:    ${LOCAL_IMAGE}"
+progress "Registry:       ${REGISTRY_HOST}"
 progress "Repository:     ${DOCKER_REPO}"
+
+# Log in when a token is available. Without one, rely on an existing
+# "docker login" and let "docker push" report the failure.
+#
+# The token is fed to docker on stdin and is deliberately not passed through
+# run(), which echoes its arguments under --verbose and --pretend.
+REGISTRY_TOKEN=""
+
+if [[ -n "$TOKEN_FILE" ]]; then
+    [[ -f "$TOKEN_FILE" ]] || err "Token file not found (--token-file): ${TOKEN_FILE}"
+    REGISTRY_TOKEN="$(<"$TOKEN_FILE")"
+    REGISTRY_TOKEN="${REGISTRY_TOKEN%%$'\n'*}"
+    [[ -n "$REGISTRY_TOKEN" ]] || err "Token file is empty: ${TOKEN_FILE}"
+else
+    REGISTRY_TOKEN="${GHCR_TOKEN:-}"
+fi
+
+if [[ -n "$REGISTRY_TOKEN" ]]; then
+    REGISTRY_USER="${USER_ARG:-${GHCR_USER:-}}"
+    [[ -n "$REGISTRY_USER" ]] \
+        || err "A registry token was given but no username. Set \$GHCR_USER or pass \"-u <user>\"."
+
+    progress "Logging in to ${REGISTRY_HOST} as ${REGISTRY_USER}"
+
+    if [[ -n "$VERBOSE" || -n "$PRETEND" ]]; then
+        printf '+ docker login %q -u %q --password-stdin <<< <token>\n' \
+            "$REGISTRY_HOST" "$REGISTRY_USER"
+    fi
+
+    if [[ -z "$PRETEND" ]]; then
+        printf '%s' "$REGISTRY_TOKEN" \
+            | docker login "$REGISTRY_HOST" -u "$REGISTRY_USER" --password-stdin \
+            || err "Login to ${REGISTRY_HOST} failed. GHCR requires a classic personal access token with the \"write:packages\" scope."
+    fi
+else
+    progress "No token given (\$GHCR_TOKEN or --token-file); using existing docker login"
+fi
 
 # Versioned tag.
 progress "Pushing ${DOCKER_REPO}:${PAV_VERSION}"

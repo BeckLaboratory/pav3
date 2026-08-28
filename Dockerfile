@@ -13,6 +13,12 @@
 #
 # Convert to Singularity/Apptainer:
 #   apptainer build pav3.sif docker-daemon://pav3:latest
+#
+# Published images (no login required):
+#   docker pull ghcr.io/becklaboratory/pav3:latest
+#   apptainer pull oras://ghcr.io/becklaboratory/pav3-sif:latest
+#
+# The published .sif is signed; check it with "apptainer verify pav3_<ver>.sif".
 ###############################################################################
 
 # --- Pinned versions ---------------------------------------------------------
@@ -71,7 +77,7 @@ ARG PAV_VERSION
 
 LABEL org.opencontainers.image.title="PAV3" \
       org.opencontainers.image.description="Assembly-based variant caller for phased genomes" \
-      org.opencontainers.image.source="https://github.com/BeckLaboratory/pav" \
+      org.opencontainers.image.source="https://github.com/BeckLaboratory/pav3" \
       org.opencontainers.image.licenses="MIT" \
       org.opencontainers.image.version="${PAV_VERSION}"
 

@@ -29,11 +29,11 @@ command.
 
 PAV currently requires a configuration file and a table of assemblies to run, similar to earlier
 versions. For details about setting these up, please see see
-`CONFIG.md <https://github.com/BeckLaboratory/pav/blob/main/README.md>`_ in the PAV repository.
+`CONFIG.md <https://github.com/BeckLaboratory/pav3/blob/main/README.md>`_ in the PAV repository.
 
 This documentation is also incomplete, check back for updates as development progresses.
 
-See the `PAV Repository <https://github.com/BeckLaboratory/pav>`_ for additional information.
+See the `PAV Repository <https://github.com/BeckLaboratory/pav3>`_ for additional information.
 
 Contributions to the project are welcome.
 

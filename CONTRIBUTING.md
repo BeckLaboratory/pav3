@@ -5,7 +5,7 @@ features.
 
 ## Bugs, questions, and feature requests
 
-The project's [GitHub issues page](https://github.com/BeckLaboratory/pav/issues) may be used to ask questions,
+The project's [GitHub issues page](https://github.com/BeckLaboratory/pav3/issues) may be used to ask questions,
 report bugs, and request features.
 
 Please search for related issues before opening a new one. If you find a relevant open issue, you may monitor it for
@@ -49,7 +49,7 @@ Please make sure you understand the [Code of Conduct](CODE_OF_CONDUCT.md) before
 
 Pull the codebase from GitHub:
 ```bash
-git clone https://github.com/BeckLaboratory/pav.git
+git clone https://github.com/BeckLaboratory/pav3.git
 cd pav
 ```
 
