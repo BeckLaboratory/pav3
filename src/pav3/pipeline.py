@@ -895,6 +895,7 @@ def link_fasta(
         dest_fa_path, dest_fai_path
     ] + [dest_gzi_path] if dest_gzi_path is not None else []
 
+
 def resolve_relative(
         source_path: str | Path,
         dest_path: str | Path,
@@ -1037,7 +1038,7 @@ def get_pav_config_path(
 
 def get_pav_asm_table_path(
         pav_config: Optional[dict] = None,
-        root_path: Optional[str | Path] = Path('.'),
+        root_path: Optional[str | Path] = None,
 ) -> Path:
     """Get a path to the assembly table.
 
