@@ -312,12 +312,12 @@ def op_arr_add_coords(
 
     Columns:
 
-        0: Operation code
-        1: Operation length
-        2: Reference position
-        3: Query position
-        4: Index (optional, first record is 0, second is 1, etc). Allows rows to be dropped while keeping a record of
-           the operation index.
+    * 0: Operation code
+    * 1: Operation length
+    * 2: Reference position
+    * 3: Query position
+    * 4: Index (optional, first record is 0, second is 1, etc). Allows rows to be dropped while keeping a record of
+      the operation index.
 
     :param op_arr: Array of operations (n x 2, op_code/op_len columns).
     :param pos_ref: First aligned reference base in the sequence. Note the query position is determined by following

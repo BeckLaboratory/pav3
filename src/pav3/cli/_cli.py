@@ -16,14 +16,13 @@ from ._subcommand_subseq import _add_subparser_subseq, subcommand_subseq
 from ._common_opt import _add_opt_version
 
 
-def parse_arguments(
-        argv: Optional[list[Any]] = None
-):
-    """Parse command-line arguments.
+def build_parser() -> argparse.ArgumentParser:
+    """Construct the PAV argument parser.
 
-    :param argv: Array of arguments. Defaults to `sys.argv`.
+    Separated from :func:`parse_arguments` so the parser can be inspected without parsing
+    arguments, which the documentation build uses to generate the CLI reference.
 
-    :return: A configured argument object.
+    :return: Argument parser for all PAV subcommands.
     """
 
     # Create base argument parser
@@ -54,8 +53,20 @@ def parse_arguments(
     _add_subparser_maketable(subparsers)
     _add_subparser_license(subparsers)
 
-    # Parse
-    return parser.parse_args(argv)
+    return parser
+
+
+def parse_arguments(
+        argv: Optional[list[Any]] = None
+):
+    """Parse command-line arguments.
+
+    :param argv: Array of arguments. Defaults to `sys.argv`.
+
+    :return: A configured argument object.
+    """
+
+    return build_parser().parse_args(argv)
 
 
 def main(

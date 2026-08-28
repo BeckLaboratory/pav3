@@ -51,8 +51,10 @@
 #   -q, --quiet            Suppress per-step progress messages.
 #   -h, --help             Print this help and exit.
 #
-# Any unrecognized arguments, and anything after a literal "--", are passed
-# through to the underlying "apptainer push" commands.
+# Unrecognized options are rejected rather than forwarded, so a flag borrowed
+# from build_app (for example "-t") fails here instead of being spliced into the
+# "apptainer push" command line. Non-option arguments, and anything after a
+# literal "--", are passed through to "apptainer push".
 
 set -euo pipefail
 
@@ -129,6 +131,7 @@ while [[ $# -gt 0 ]]; do
         -q|--quiet)     QUIET=1; shift ;;
         -h|--help)      usage; exit 0 ;;
         --)             shift; EXTRA+=("$@"); break ;;
+        -*)             err "Unknown option: $1. Options for \"apptainer push\" go after a literal \"--\"." ;;
         *)              EXTRA+=("$1"); shift ;;
     esac
 done
@@ -149,6 +152,32 @@ run() {
         return 0
     fi
     "$@"
+}
+
+# Read a pushed reference back from the registry.
+#
+# "apptainer push" exiting 0 is not proof the artifact landed: GHCR applies a
+# timeout to the push as a whole, and a large .sif can finish uploading its blob
+# and then stall while the manifest is finalized, leaving no version behind.
+#
+# This is advisory only. The check runs through "docker manifest inspect", which
+# is not guaranteed to accept an ORAS artifact's media type, so a negative result
+# is reported as a warning rather than treated as a failed push.
+verify_ref() {
+    local ref="${1#*://}"
+
+    [[ -n "$PRETEND" ]] && return 0
+
+    if ! command -v docker >/dev/null 2>&1; then
+        warn "docker not found, so ${ref} was not read back from the registry. Confirm with \"${APP} pull ${1}\"."
+        return 0
+    fi
+
+    if docker manifest inspect "$ref" >/dev/null 2>&1; then
+        progress "Confirmed in registry: ${ref}"
+    else
+        warn "Could not read ${ref} back from the registry. The push reported success, so this may just be \"docker manifest inspect\" refusing an ORAS artifact. Confirm with \"${APP} pull ${1}\"."
+    fi
 }
 
 
@@ -227,9 +256,15 @@ REGISTRY_HOST="${REGISTRY_HOST%%/*}"
 ### Locate apptainer (or singularity) ###
 
 APP="$(command -v apptainer || command -v singularity || true)"
+
 if [[ -z "$APP" ]]; then
-    [[ -n "$PRETEND" ]] && APP="apptainer" \
-        || err "Neither \"apptainer\" nor \"singularity\" was found in PATH."
+    # Under --pretend there is nothing to execute, so name the command the
+    # echoed lines would have used.
+    if [[ -n "$PRETEND" ]]; then
+        APP="apptainer"
+    else
+        err "Neither \"apptainer\" nor \"singularity\" was found in PATH."
+    fi
 fi
 APP="$(basename "$APP")"
 
@@ -283,6 +318,20 @@ fi
 
 ### Sign and push ###
 
+# Report an incomplete run. Anything that fails below -- a missing signing key, an aborted passphrase prompt, a registry timeout -- exits
+# through "set -e"; say plainly that nothing was published, so a run that stops
+# partway is not mistaken for one that finished when the output has scrolled.
+on_exit() {
+    local rc=$?
+
+    if [[ $rc -ne 0 ]]; then
+        printf '\nerror: deploy failed (exit %d). %s was NOT pushed.\n' \
+            "$rc" "${ORAS_REF}:${PAV_VERSION}" >&2
+    fi
+}
+
+trap on_exit EXIT
+
 progress "PAV directory:  ${PAV_DIR}"
 progress "PAV version:    ${PAV_VERSION}"
 progress "Image:          ${SIF}"
@@ -299,11 +348,15 @@ fi
 # Versioned tag.
 progress "Pushing ${ORAS_REF}:${PAV_VERSION}"
 run "$APP" push ${EXTRA[@]+"${EXTRA[@]}"} "$SIF" "${ORAS_REF}:${PAV_VERSION}"
+verify_ref "${ORAS_REF}:${PAV_VERSION}"
 
 # "latest" tag (unless suppressed).
 if [[ -z "$NOLATEST" ]]; then
     progress "Pushing ${ORAS_REF}:latest"
     run "$APP" push ${EXTRA[@]+"${EXTRA[@]}"} "$SIF" "${ORAS_REF}:latest"
+    verify_ref "${ORAS_REF}:latest"
 fi
 
 progress "Done. Pushed ${ORAS_REF}:${PAV_VERSION}"
+progress "Pull with:      ${APP} pull ${ORAS_REF}:${PAV_VERSION}"
+progress "Note:           the first push of a package creates it PRIVATE. Until it is set public in the GitHub package settings, an anonymous pull fails with \"401 Unauthorized\"."

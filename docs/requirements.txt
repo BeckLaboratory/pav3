@@ -1,0 +1,13 @@
+# Documentation build dependencies.
+#
+# Used by both the "sphinx" tox environment and the Read the Docs build so the
+# two stay in step (.readthedocs.yaml, tox.toml).
+#
+# PAV itself is installed separately (see .readthedocs.yaml): the CLI reference
+# and the table schema pages import it at build time.
+
+sphinx>=8.2.3
+sphinx-autoapi>=3.6.0
+sphinx-rtd-theme>=3.0.2
+sphinx-argparse>=0.5.2
+myst-parser>=4.0.0

@@ -10,34 +10,56 @@ low-confidence alignment prediction helps to filter variant calls from erroneous
 PAV 3 is fast. By utilizing modern data science tools, specifically Polars, PAV produces callsets
 using a fraction of the memory and CPU resources as earlier versions.
 
-This version is currently under active development, and a complete version has not yet been
-released. If you would like to try it out, you can install it from source using the following
-command:
+.. warning::
+
+   PAV 3 is under active development and has not had a final release. See
+   :doc:`API stability <stability>` before depending on it.
+
+Install
+-------
+
+PAV requires Python 3.12 or newer.
 
 .. code-block:: bash
 
    pip install pav3
 
-PAV can then be run with a built-in command-line interface:
+Run
+---
+
+PAV is run through its built-in command-line interface:
 
 .. code-block:: bash
 
-   python -m pav3 ...
+   pav3 batch
 
-Note that if you are in an environment where PAV is installed, ``python -m`` may be dropped from the
-command.
+In some Python environments the command must be run through ``python``:
 
-PAV currently requires a configuration file and a table of assemblies to run, similar to earlier
-versions. For details about setting these up, please see see
-`CONFIG.md <https://github.com/BeckLaboratory/pav3/blob/main/README.md>`_ in the PAV repository.
+.. code-block:: bash
 
-This documentation is also incomplete, check back for updates as development progresses.
+   python -m pav3 batch
 
-See the `PAV Repository <https://github.com/BeckLaboratory/pav3>`_ for additional information.
+See the :doc:`command-line interface <cli>` for all subcommands and options.
 
-Contributions to the project are welcome.
+Configuration
+-------------
+
+``pav3 batch`` reads a configuration file (``pav.json``) and a table of assemblies
+(``assemblies.tsv``). For details about setting these up, along with guidance on choosing a
+reference and a description of the output, see the
+`README <https://github.com/BeckLaboratory/pav3/blob/main/README.md>`_ in the PAV repository.
+
+This site is the API and command-line reference; the README is the usage guide.
+
+Contributions to the project are welcome. See the
+`PAV repository <https://github.com/BeckLaboratory/pav3>`_.
 
 .. toctree::
    :maxdepth: 2
    :caption: Contents:
 
+   cli
+   schemas
+   stability
+   changelog
+   license

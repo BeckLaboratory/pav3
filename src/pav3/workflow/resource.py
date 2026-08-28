@@ -12,7 +12,7 @@ For example, a task merging multiple callset tables might extract all resources 
 with each resource to provide additional arguments to the task, such as a list of identifiers
 constructed for each.
 
-For example, a resource might look like:
+For example, a resource might look like::
 
     resources = ResourceContainer(
         'gen_task',
@@ -41,7 +41,7 @@ For example, a resource might look like:
         ) for resource in c.paths.resource_by_tag({'type': 'callset'})
     ]
 
-Then, the input from merging can be constructed easily:
+Then, the input from merging can be constructed easily::
 
     (
         (

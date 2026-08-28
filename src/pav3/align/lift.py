@@ -58,6 +58,7 @@ poor alignment record is not prioritized over one where both coordinates land on
 alignment record.
 
 Values:
+
 * score: Prioritize by the alignment record scores. First by the lowest score, then by the highest.
 * filter: Prioritize by the lesser number of values in the alignment record "filter", first on
   the record with more filters, then on the record with fewer filters.
@@ -69,6 +70,7 @@ Values:
   if a lift switches alignment records.
 
 Keys:
+
 * best: Prioritize on the best alignment records (score, filter, len, single_align, same_align).
 * align: Same align, then best (same_align, score, filter, len, single_align).
 * len: Same region length, then best (len, score, filter, single_align, same_align).
@@ -391,6 +393,7 @@ class AlignLift:
         """Lift coordinates from query to reference.
 
         Each dict has the following keys:
+
         - chrom: Reference chromosome
         - pos: Reference position in 0-based coordinates.
         - is_rev: Whether the query is reverse-complemented in this alignment
@@ -456,6 +459,7 @@ class AlignLift:
         """Lift coordinates from reference to query.
 
         Each dict has the following keys:
+
         - chrom: Query ID
         - pos: Query position in 0-based coordinates
         - is_rev: Whether the query is reverse-complemented

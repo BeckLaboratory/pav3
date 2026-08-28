@@ -38,8 +38,10 @@
 #   -q, --quiet            Suppress per-step progress messages.
 #   -h, --help             Print this help and exit.
 #
-# Any unrecognized arguments, and anything after a literal "--", are passed
-# through to the underlying "docker push" commands.
+# Unrecognized options are rejected rather than forwarded, so a flag borrowed
+# from another script fails here instead of being spliced into the "docker push"
+# command line. Non-option arguments, and anything after a literal "--", are
+# passed through to "docker push".
 
 set -euo pipefail
 
@@ -111,6 +113,7 @@ while [[ $# -gt 0 ]]; do
         -q|--quiet)     QUIET=1; shift ;;
         -h|--help)      usage; exit 0 ;;
         --)             shift; EXTRA+=("$@"); break ;;
+        -*)             err "Unknown option: $1. Options for \"docker push\" go after a literal \"--\"." ;;
         *)              EXTRA+=("$1"); shift ;;
     esac
 done
@@ -131,6 +134,20 @@ run() {
     fi
     [[ -n "$PRETEND" ]] && return 0
     "$@"
+}
+
+# Read a pushed tag back from the registry.
+#
+# "docker push" exiting 0 is normally conclusive, but GHCR applies a timeout to
+# the push as a whole, so confirm the manifest is really there before the script
+# claims the release landed.
+verify_ref() {
+    [[ -n "$PRETEND" ]] && return 0
+
+    docker manifest inspect "$1" >/dev/null 2>&1 \
+        || err "Push reported success but ${1} could not be read back from ${REGISTRY_HOST}. The tag was not published."
+
+    progress "Confirmed in registry: ${1}"
 }
 
 
@@ -242,16 +259,34 @@ else
     progress "No token given (\$GHCR_TOKEN or --token-file); using existing docker login"
 fi
 
+# Report an incomplete run. Anything that fails below -- a rejected login, a registry timeout -- exits
+# through "set -e"; say plainly that nothing was published, so a run that stops
+# partway is not mistaken for one that finished when the output has scrolled.
+on_exit() {
+    local rc=$?
+
+    if [[ $rc -ne 0 ]]; then
+        printf '\nerror: deploy failed (exit %d). %s was NOT pushed.\n' \
+            "$rc" "${DOCKER_REPO}:${PAV_VERSION}" >&2
+    fi
+}
+
+trap on_exit EXIT
+
 # Versioned tag.
 progress "Pushing ${DOCKER_REPO}:${PAV_VERSION}"
 run docker tag "${LOCAL_IMAGE}" "${DOCKER_REPO}:${PAV_VERSION}"
 run docker push ${EXTRA[@]+"${EXTRA[@]}"} "${DOCKER_REPO}:${PAV_VERSION}"
+verify_ref "${DOCKER_REPO}:${PAV_VERSION}"
 
 # "latest" tag (unless suppressed).
 if [[ -z "$NOLATEST" ]]; then
     progress "Pushing ${DOCKER_REPO}:latest"
     run docker tag "${LOCAL_IMAGE}" "${DOCKER_REPO}:latest"
     run docker push ${EXTRA[@]+"${EXTRA[@]}"} "${DOCKER_REPO}:latest"
+    verify_ref "${DOCKER_REPO}:latest"
 fi
 
 progress "Done. Pushed ${DOCKER_REPO}:${PAV_VERSION}"
+progress "Pull with:      docker pull ${DOCKER_REPO}:${PAV_VERSION}"
+progress "Note:           the first push of a package creates it PRIVATE. Until it is set public in the GitHub package settings, an anonymous pull fails with \"401 Unauthorized\"."

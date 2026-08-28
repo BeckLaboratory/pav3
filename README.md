@@ -6,40 +6,23 @@
 
 Variant caller for assembled genomes.
 
-Please discuss with authors prior to publishing results using PAV 3. A paper describing PAV 3 is in
-preparation and is expected mid-2026.
-
-## Development release (Please read)
-
-PAV 3 is currently a development release and may contain bugs. Please report problems you encounter.
-
-PAV now uses Polars for fast data manipulation. If your job fails with strange Polars errors, such as "capacity
-overflow" or "PanicException", this is likely from Polars running out of memory.
-
-
-### Notes for early adopters
-
-If you have been using development versions, please read about these changes.
-
-**Call subcommand is deprecated.** If you have been running pav3 with the "call" subcommand, switch it to "batch"
-(i.e. ("pav3 batch ...")). A future version will use "call" for single assemblies (with multiple haplotypes) defined on
-the command-line and "batch" to run all assemblies from an assembly table.
-
-**Moving configuration to pav.json.** The configuration file "config.json" is being moved to "pav.json". A future
-version will ignore "config.json".
+Please discuss with authors prior to publishing results using PAV 3; contact
+[contact information](https://www.jax.org/people/peter-audano). A paper describing PAV 3 is in
+preparation.
 
 
 ## Install and run
 
 
 ### Install
+PAV requires Python 3.12 or newer.
 ```
 pip install pav3
 ```
 
 ### Run
-To run PAV, use the `pav3 batch` command after setting up configuration files (see below). A future version will add
-`pav call` for single-assemblies without requiring configuration files. 
+To run PAV, use the `pav3 batch` command after setting up configuration files (see below). A future version may add
+a command for single-assemblies without requiring configuration files.
 
 Some Python environments may require you to run `pav3` through the `python` command:
 ```
@@ -47,13 +30,41 @@ python -m pav3 batch
 ```
 
 
+### Containers
+
+Public container images include PAV and all dependencies.
+
+Docker:
+```
+docker pull ghcr.io/becklaboratory/pav3:latest
+
+docker run --rm -v "$PWD:$PWD" -w "$PWD" --user "$(id -u):$(id -g)" \
+    ghcr.io/becklaboratory/pav3:latest batch
+```
+
+Apptainer (or Singularity):
+```
+apptainer pull pav3.sif oras://ghcr.io/becklaboratory/pav3-sif:latest
+
+apptainer run pav3.sif batch
+```
+
+The container runs `pav3` itself, so arguments follow the image exactly as they would on the command line (`batch`,
+`--help`, and so on).
+
+Both examples give PAV access to the current directory only. If the reference genome or the assemblies are somewhere
+else, make those locations visible as well: add `-v /path:/path` for Docker or `--bind /path` for Apptainer.
+
+Replace `latest` with a version (e.g. `3.0.0.dev24`) to pin a specific release.
+
+
 ### Dependencies
-Currently, PAV needs `minimap2` in the environment where it is run. This may change in future releases. All other
-dependencies are handled by the installer.
+Currently, PAV needs `minimap2` in the environment where it is run (the containers above already include it). This may
+change in future releases. All other dependencies are handled by the installer.
 
 
 ### Output
-PAV will output a VCF file for each sample called `NAME.vcf.gz`.
+PAV will output a VCF file `NAME.vcf.gz` to the run directory for each sample.
 
 * `results/NAME/call_hap`: Unmerged variant calls.
   * Includes tables of callable regions in reference ("callable_ref") and query ("callable_qry") coordinates.
@@ -109,9 +120,9 @@ parental origins, "hap_pat" and "hap_mat" are commonly used.
 There must be at least one haplotype per assembly, and PAV has no limits on the number of haplotypes (i.e. 3 or more
 are acceptable).
 
-Not all assemblies need to have the same haplotypes. PAV will ignore empty the "hap_" values for each assembly where the
-path is empty. For example, if some assemblies have an "unphased" haplotype and other do not, include the "hap_unphased"
-column and leave it blank for assemblies that do not have it.
+Not all assemblies need to have the same haplotypes. PAV will ignore empty "hap_" values for each assembly where the
+path is empty. For example, if some assemblies have an "unphased" haplotype and others do not, include the
+"hap_unphased" column and leave it blank for assemblies that do not have it.
 
 Note that genotypes in the VCF file will have one allele for each haplotype defined for the assembly. For an assembly
 with haplotypes "h1", "h2", and "unphased", three genotype alleles will be possible (e.g. "1|0|." for a heterozygous
@@ -135,14 +146,14 @@ are defined in `pav.json` or are PAV default values if not defined. Values in th
 of key-value pairs (i.e. "key1=val1;key2=val2"). The "reference" parameter cannot be set in the assembly table.
 
 
-### A note on references
+### Suitable genome references
 
 Align against primary assemblies composed of chromosome scaffolds including unplaced contigs and unlocalized contigs
-if they exists (GRCh/hg references). Do not use references with ALT, PATCH, or DECOY scaffolds. Reference redundancy
+if they exist (GRCh/hg references). Do not use references with ALT, PATCH, or DECOY scaffolds. Reference redundancy
 from these non-primary contigs may increase callset errors.
 
 The GRCh38 HGSVC no-ALT reference for long reads was shared by the HGSVC consortium:
-ftp://ftp.1000genomes.ebi.ac.uk/vol1/ftp/data_collections/HGSVC2/technical/reference/20200513_hg38_NoALT/
+https://ftp.1000genomes.ebi.ac.uk/vol1/ftp/data_collections/HGSVC2/technical/reference/20200513_hg38_NoALT/
 
 The T2T-CHM13v2.0 (hs1 on UCSC) is suitable without alteration.
 
@@ -157,8 +168,8 @@ PAV uses Python package versioning with three fields:
 
 * Major: Major changes or new features.
 * Minor: Small changes, but may affect PAV's API or command-line interfaces.
-* Patch: Small changes and minor new features. Patch versions do break API or command-line compatibility, but may
-  add minor features or options to the API that were not previously supported.
+* Patch: Small changes and minor new features. Patch versions do not break API or command-line compatibility, but may
+  add new features.
 
 PAV follows Python's packaging versioning scheme (https://packaging.python.org/en/latest/discussions/versioning/).
 
@@ -168,9 +179,20 @@ and "3.0.0a1" is an early alpha version, and "3.0.0rc1" is a release candidate, 
 release and should not be considered production-ready.
 
 
+## Reporting bugs
+
+Please report problems you encounter on the
+[issues page](https://github.com/BeckLaboratory/pav3/issues).
+
+
 ## Cite PAV
 
 PAV 3 does not yet have a citation. For now, use the citation for previous PAV versions, but check back for updates.
 
 Ebert et al., “Haplotype-Resolved Diverse Human Genomes and Integrated Analysis of Structural Variation,”
 Science, February 25, 2021, eabf7117, https://doi.org/10.1126/science.abf7117 (PMID: 33632895).
+
+
+## License
+
+PAV is released under the MIT License. See [LICENSE](LICENSE).

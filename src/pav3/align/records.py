@@ -127,12 +127,14 @@ def count_ops(
     Operation codes are integers and strings (duplicated in the dictionary for convenience).
 
     Additional keys:
+
     * "ref_bp": Total number of reference bases traversed.
     * "qry_bp": Total number of query bases traversed including soft-clipped bases.
     * "clip_l": Total number of clipped bases on the left (upstream) side.
     * "clip_r": Total number of clipped bases on the right (downstream) side.
 
     Returns a tuple of:
+
     * ref_bp: Reference bases traversed by CIGAR operations.
     * qry_bp: Query bases traversed by CIGAR operations. Does not include clipped bases.
     * clip_l: Total number of clipped bases on the left (upstream) side.

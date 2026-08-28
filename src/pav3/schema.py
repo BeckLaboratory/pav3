@@ -37,7 +37,7 @@ ALIGN: dict[str, PolarsDataType] = {
         'op_len': pl.List(pl.Int32)
     })
 }
-"""Schema of alignment tables excluding features (added by ailgn.feature)."""
+"""Schema of alignment tables excluding features (added by align.features)."""
 
 VARIANT: dict[str, PolarsDataType] = {
     'chrom': agglovar.schema.VARIANT['chrom'],
@@ -126,9 +126,9 @@ Coordinates:
 All positions (pos, end, qry_pos, and qry_end) are 0-based, half-open (BED-like coordinates).
 Query coordinates are in the original query sequence coordinates even if it was reverse-complemented during alignment
 (differs from SAM/BAM). By preserving the original query coordinates, it is possible to extract a variant locus
-directly from the assembly sequence without firsst translating the coordinates or extracting and transforming a whole
+directly from the assembly sequence without first translating the coordinates or extracting and transforming a whole
 assembly sequence (e.g. use pysam or samtools faidx to extract the variant locus, then reverse-complement the result if
-if necessary). This also allows variant calls to be directly used as annotations on the assembly sequence without
+necessary). This also allows variant calls to be directly used as annotations on the assembly sequence without
 transforming the coordinates.
 
 Outer inversions:

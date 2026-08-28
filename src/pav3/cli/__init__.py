@@ -1,6 +1,7 @@
 """PAV command-line interface (CLI), argument parsing, and subcommand routines."""
 
 __all__ = [
+    'build_parser',
     'parse_arguments',
     'main',
     'subcommand_batch',
@@ -12,7 +13,7 @@ __all__ = [
 ]
 
 from ._cli import (
-    parse_arguments, main,
+    build_parser, parse_arguments, main,
 )
 
 from ._subcommand_call import subcommand_call
