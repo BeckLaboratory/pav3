@@ -34,6 +34,10 @@ python -m pav3 batch
 
 Public container images include PAV and all dependencies.
 
+> [!IMPORTANT]
+> Pulling containers will generate 401 errors pending permissions changes by our organization. This should be
+> corrected within a few days, please check back.
+
 Docker:
 ```
 docker pull ghcr.io/becklaboratory/pav3:latest
