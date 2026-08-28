@@ -945,6 +945,7 @@ def link_fasta(
     )
 
 
+
 def resolve_relative(
         source_path: str | Path,
         dest_path: str | Path,
