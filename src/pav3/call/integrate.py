@@ -3,12 +3,14 @@
 Each function operates on a single haplotype, merging across haplotypes is not performed by this module.
 """
 
+from pathlib import Path
 from typing import Optional
 
 import polars as pl
 
 from .expr import id_snv, id_nonsnv
 from .. import schema
+from ..seq import LRUSequenceCache
 
 
 def set_base_cols(
@@ -280,6 +282,7 @@ def add_cpx_derived(
         df: pl.LazyFrame,
         df_segment: pl.LazyFrame,
         collect_list: dict,
+        ref_fa: Path | str,
 ) -> None:
     """Identify noncanonical variants that can be derived from partial complex events.
 
@@ -294,6 +297,7 @@ def add_cpx_derived(
     :param df: Table of variant calls.
     :param df_segment: Variant segment table.
     :param collect_list: Dictionary of variant tables to collect.
+    :param ref_fa: Reference FASTA filename, used to fill the sequence of variants at the outer breakpoint site.
     """
 
     # Base table for derived variants
@@ -348,6 +352,37 @@ def add_cpx_derived(
         )
         .filter(pl.col('vartype').is_not_null())
     )
+
+    # Fill the variant sequence from the reference.
+    #
+    # These variants are derived from the reference gap or overlap between the anchoring alignments, so the sequence
+    # is the reference over that region for both DEL (bases skipped) and DUP (bases duplicated). Without it the
+    # sequence-ALT path in `pav3.vcf` writes deletions with an empty REF.
+    #
+    # Query coordinates are left null: the anchors abut on the query at the outer breakpoint, so there is no query
+    # region to report.
+    #
+    # Rows are grouped by chromosome while the sequences are read so the sequence cache holds one chromosome at a
+    # time, then restored to their original order.
+    with LRUSequenceCache(str(ref_fa), 1) as ref_cache:
+        df_a = (
+            df_a
+            .with_row_index('_seq_index')
+            .sort('chrom')
+            .with_columns(
+                pl.struct('chrom', 'pos', 'end')
+                .map_elements(
+                    lambda vals: ref_cache[vals['chrom']][vals['pos']:vals['end']],
+                    return_dtype=pl.String,
+                )
+                .cast(schema.VARIANT['seq'])
+                .alias('seq')
+            )
+            .sort('_seq_index')
+            .drop('_seq_index')
+            .collect()  # Must collect while the sequence cache is open
+            .lazy()
+        )
 
     # Aligned segments between anchors
     df_b = (

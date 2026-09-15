@@ -368,6 +368,20 @@ class Variant(ABC):
                 if self.qry_rev:
                     self._seq = str(Bio.Seq.Seq(self._seq).reverse_complement())
 
+                # Tandem-duplicated bases are counted by "varlen" (see InsertionVariant and ComplexVariant), but
+                # they fall inside both anchor alignments and so are absent from the query region between them.
+                # Without them the sequence is short by the duplicated length, and for a duplication with no other
+                # inserted bases it is empty, which yields a VCF record with REF equal to ALT.
+                #
+                # The duplicated bases are taken from the reference over the same region reported by INFO/DUP (see
+                # "seg_aligned_to_dup"), so sequence divergence between the two copies is not represented here.
+                if self.interval is not None and self.interval.len_ref < 0:
+                    self._seq += self.caller_resources.cache_ref[
+                        self.region_ref_qrytrim.chrom
+                    ][
+                        self.region_ref_qrytrim.pos:self.region_ref_qrytrim.end
+                    ]
+
         return self._seq
 
     @property

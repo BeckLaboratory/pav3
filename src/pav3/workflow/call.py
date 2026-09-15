@@ -239,6 +239,7 @@ def _integrate_sources(
                 df=df,
                 df_segment=df_segment_var,
                 collect_list=collect_list,
+                ref_fa=pav3.pipeline.expand_fofn(input['ref_fofn'])[0],
             )
 
         # Aggregate if type is split over multiple inputs. `df` is already a disk-backed scan (materialized above),

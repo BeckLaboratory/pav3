@@ -338,6 +338,7 @@ rule call_integrate_sources:
         align_qryref='results/{asm_name}/align/{hap}/align_trim-qryref.parquet',
         inter_segment='temp/{asm_name}/call_hap/inter_segment_{hap}.parquet',
         inter_ref_trace='temp/{asm_name}/call_hap/inter_reftrace_cpx_{hap}.parquet',
+        ref_fofn='data/ref/ref.fofn',
     output:
         insdel='results/{asm_name}/call_hap/call_insdel_{hap}.parquet',
         inv='results/{asm_name}/call_hap/call_inv_{hap}.parquet',
