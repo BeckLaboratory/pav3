@@ -12,6 +12,7 @@ __all__ = [
     'ALT_FIELDS',
     'VARTYPES',
     'VARTYPE_COMPAT',
+    'REF_SPAN_VARTYPE',
     'get_headers',
     'init_vcf_fields',
     'vcf_fields_seq_insdel',
@@ -126,54 +127,51 @@ INFO_FIELDS = [
     #     'Unique variant ID',
     # ),
     InfoField(
-        'SVTYPE', '.', 'String',
-        'Variant type (e.g. INS, DEL, INV, DUP, CPX) for non-SNV variants',
+        'SVLEN', 'A', 'Integer',
+        'Variant length: inserted bases for INS and CPX (query-side), affected reference span for DEL, INV, '
+        'and DUP. Does not equal the POS/END reference span for INS or CPX.',
     ),
     InfoField(
-        'SVLEN', '.', 'Integer',
-        'Variant length',
+        'END', '1', 'Integer',
+        'Variant end position on the reference (1-based, inclusive)',
     ),
     InfoField(
-        'END', '.', 'Integer',
-        'Variant end position',
-    ),
-    InfoField(
-        'SUBTYPE', '.', 'String',
+        'SUBTYPE', 'A', 'String',
         'Variant subtype (TD for tandem duplications)',
     ),
     InfoField(
-        'CPX_REF_TRACE', '.', 'String',
+        'CPX_REF_TRACE', 'A', 'String',
         'Reference trace for complex variants',
     ),
     InfoField(
-        'CPX_QRY_TRACE', '.', 'String',
+        'CPX_QRY_TRACE', 'A', 'String',
         'Query trace for complex variants',
     ),
     InfoField(
-        'QUERY', '.', 'String',
+        'QUERY', 'A', 'String',
         'Query sequence position',
     ),
     InfoField(
-        'QUERYREV', '.', 'Character',
+        'QUERYREV', 'A', 'Character',
         'Query sequence orientation vs the reference (+ or -, * if unknown',
     ),
     InfoField(
-        'SEQ', '.', 'String',
+        'SEQ', 'A', 'String',
         'Variant sequence.',
     ),
     InfoField(
-        'DUP', '.', 'String',
-        'Comma-separated list of regions duplicated by this variant, each region in format '
+        'DUP', 'A', 'String',
+        'Slash-separated list of regions duplicated by this variant, each region in format '
         '\\"chrom:pos-end\\" (1-base, closed coordinates)'
     ),
     InfoField(
-        'HOMREF', '.', 'String',
-        'Reference homology as a comma-separated list of two integers (upstream homology, downstream homology). '
+        'HOMREF', 'A', 'String',
+        'Reference homology as a slash-separated pair of integers (upstream/downstream). '
         'Prefer reference homology for deletions.'
     ),
     InfoField(
-        'HOMQRY', '.', 'String',
-        'Query homology as a comma-separated list of two integers (upstream homology, downstream homology). '
+        'HOMQRY', 'A', 'String',
+        'Query homology as a slash-separated pair of integers (upstream/downstream). '
         'Prefer query homology for insertions.'
     ),
 ]
@@ -213,6 +211,15 @@ VARTYPE_COMPAT = {
     'cpx': {'CPX'},
     'dup': {'DUP'},
 }
+
+_MAX_INVALID_REPORT = 10
+"""Maximum number of variant IDs named when REF and ALT fail validation."""
+
+REF_SPAN_VARTYPE = frozenset({'DEL', 'INV', 'DUP', 'CPX'})
+"""Variant types spanning reference bases, which receive an INFO/END annotation.
+
+INS spans no reference bases and SNVs are fully described by REF and ALT, so neither is annotated.
+"""
 
 
 def get_headers(
@@ -449,6 +456,9 @@ def vcf_fields_seq_insdel(
         )
     )
 
+    # Carry an identifying column through for error reporting (dropped by the final select).
+    label_col_list = ['id'] if 'id' in df.collect_schema().names() else []
+
     # Get fields
     with _LockingPysam(ref_fa) as ref_file:
         df_fields = (
@@ -470,13 +480,14 @@ def vcf_fields_seq_insdel(
                 '_ref_base_left',
                 'pos',
                 'vartype',
-                'seq'
+                'seq',
+                *label_col_list,
             )
-            .collect().lazy()  # Must collect while ref_file is open
+            .collect()  # Must collect while ref_file is open
         )
 
     # Set REF and ALT fields
-    return (
+    df_fields = (
         df_fields
         .with_columns(  # Set REF and ALT fields
             (
@@ -522,8 +533,38 @@ def vcf_fields_seq_insdel(
             '_ref_base',
             '_ref_base_pos',
             '_ref_base_left',
+            *label_col_list,
         )
     )
+
+    # Reject structurally invalid records.
+    #
+    # REF and ALT must both be non-empty, and a record with REF matching ALT describes no variant. Both occur when
+    # "seq" is null or empty for a variant type that needs it, which is a callset bug worth failing on rather than
+    # writing out for a downstream tool to trip over.
+    df_invalid = df_fields.filter(
+        pl.col('_vcf_ref').is_null()
+        | pl.col('_vcf_alt').is_null()
+        | (pl.col('_vcf_ref').str.len_chars() == 0)
+        | (pl.col('_vcf_alt').str.len_chars() == 0)
+        | (pl.col('_vcf_ref') == pl.col('_vcf_alt'))
+    )
+
+    if df_invalid.height > 0:
+        label_col = label_col_list[0] if label_col_list else '_index'
+
+        label_list = [
+            str(label) for label in df_invalid[label_col].head(_MAX_INVALID_REPORT).to_list()
+        ]
+
+        raise ValueError(
+            f'Invalid REF or ALT in {df_invalid.height} VCF record(s) '
+            f'(empty REF, empty ALT, or REF matching ALT): '
+            f'{", ".join(label_list)}'
+            f'{", ..." if df_invalid.height > len(label_list) else ""}'
+        )
+
+    return df_fields.drop(label_col_list).lazy()
 
 
 def vcf_fields_sym(
@@ -811,38 +852,34 @@ def standard_info_fields(
     #         )
     #     )
 
-    if 'vartype' in cols:
+    # SVTYPE is not emitted. VCF 4.5 deprecates it as redundant with ALT, and the type is recoverable from the
+    # symbolic ALT (<INV>, <DUP>, <CPX>) or from the REF and ALT lengths for sequence-resolved INS, DEL, and SNV.
+
+    if len(cols & {'varlen', 'vartype'}) == 2:
+        # SVLEN is always positive. VCF 4.5 takes the absolute value of SVLEN and treats a negative value as
+        # positive, so deletions are no longer negated.
         df = df.with_columns(
             pl.when(pl.col('vartype') != 'SNV')
             .then(
                 pl.col('_vcf_info').list.concat(
-                    pl.concat_str(pl.lit('SVTYPE='), 'vartype')
+                    pl.concat_str(pl.lit('SVLEN='), 'varlen')
                 )
             )
             .otherwise('_vcf_info')
             .alias('_vcf_info')
         )
 
-    if 'varlen' in cols:
+    if len(cols & {'end', 'vartype'}) == 2:
+        # END spans the affected reference bases, which htslib uses to compute "rlen" for indexing. Without it,
+        # symbolic records index as 1 bp and region queries can miss them.
+        #
+        # Taken from "end" rather than POS plus SVLEN: "pos" and "end" are 0-based half-open, so "end" is already
+        # the 1-based inclusive VCF END, and for CPX "varlen" is a query-side length, not a reference span.
         df = df.with_columns(
-            pl.col('_vcf_info').list.concat(
-                pl.concat_str(
-                    pl.lit('SVLEN='),
-                    pl.when(pl.col('vartype') != 'DEL')
-                    .then('varlen')
-                    .otherwise(- pl.col('varlen'))
-                )
-            )
-        )
-
-        df = df.with_columns(
-            pl.when(pl.col('vartype').is_in({'DEL', 'INV'}))
+            pl.when(pl.col('vartype').is_in(REF_SPAN_VARTYPE))
             .then(
                 pl.col('_vcf_info').list.concat(
-                    pl.concat_str(
-                        pl.lit('END='),
-                        pl.col('_vcf_pos') + pl.col('varlen')
-                    )
+                    pl.concat_str(pl.lit('END='), 'end')
                 )
             )
             .otherwise('_vcf_info')
@@ -866,7 +903,10 @@ def standard_info_fields(
             pl.when(pl.col('trace_ref').is_not_null())
             .then(
                 pl.col('_vcf_info').list.concat(
-                    pl.concat_str(pl.lit('CPX_REF_TRACE='), 'trace_ref')
+                    pl.concat_str(
+                        pl.lit('CPX_REF_TRACE='),
+                        pl.col('trace_ref').str.replace_all(',', '')
+                    )
                 )
             )
             .otherwise('_vcf_info')
@@ -878,7 +918,10 @@ def standard_info_fields(
             pl.when(pl.col('trace_qry').is_not_null())
             .then(
                 pl.col('_vcf_info').list.concat(
-                    pl.concat_str(pl.lit('CPX_QRY_TRACE='), 'trace_qry')
+                    pl.concat_str(
+                        pl.lit('CPX_QRY_TRACE='),
+                        pl.col('trace_qry').str.replace_all(',', '')
+                    )
                 )
             )
             .otherwise('_vcf_info')
@@ -924,7 +967,7 @@ def standard_info_fields(
 
     if 'dup' in cols:
         df = df.with_columns(
-            pl.when(pl.col('dup').is_not_null() & pl.col('dup').list.len() > 0)
+            pl.when(pl.col('dup').is_not_null() & (pl.col('dup').list.len() > 0))
             .then(
                 pl.col('_vcf_info').list.concat(
                     pl.concat_str(
@@ -937,7 +980,7 @@ def standard_info_fields(
                                 pl.lit('-'),
                                 pl.element().struct.field('end').cast(pl.String),
                             )
-                        ).list.join(',')
+                        ).list.join('/')
                     )
                 )
             )
@@ -953,7 +996,7 @@ def standard_info_fields(
                     pl.concat_str(
                         pl.lit('HOMREF='),
                         pl.col('hom_ref').struct.field('up'),
-                        pl.lit(','),
+                        pl.lit('/'),
                         pl.col('hom_ref').struct.field('dn'),
                     )
                 )
@@ -969,9 +1012,9 @@ def standard_info_fields(
                 pl.col('_vcf_info').list.concat(
                     pl.concat_str(
                         pl.lit('HOMQRY='),
-                        pl.col('hom_ref').struct.field('up'),
-                        pl.lit(','),
-                        pl.col('hom_ref').struct.field('dn'),
+                        pl.col('hom_qry').struct.field('up'),
+                        pl.lit('/'),
+                        pl.col('hom_qry').struct.field('dn'),
                     )
                 )
             )

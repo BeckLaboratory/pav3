@@ -60,6 +60,7 @@ Contributions to the project are welcome. See the
 
    cli
    schemas
+   vcf
    stability
    changelog
    license

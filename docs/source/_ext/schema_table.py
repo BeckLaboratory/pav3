@@ -1,16 +1,19 @@
-"""Sphinx directive rendering a PAV table schema as a column reference.
+"""Sphinx directives rendering PAV table schemas and VCF header fields as references.
 
-Schemas are dictionaries mapping column names to Polars types (see :mod:`pav3.schema`). Rendering
-them at build time keeps the documented columns in step with the code instead of duplicating them
-into the documentation by hand.
+Schemas are dictionaries mapping column names to Polars types (see :mod:`pav3.schema`). VCF header
+fields are lists of field objects (see :mod:`pav3.vcf`). Rendering them at build time keeps the
+documented columns and fields in step with the code instead of duplicating them into the
+documentation by hand.
 
 Usage::
 
     .. schema-table:: pav3.schema.ALIGN
+    .. vcf-fields:: pav3.vcf.INFO_FIELDS
 """
 
 __all__ = [
     'SchemaTableDirective',
+    'VcfFieldsDirective',
     'setup',
 ]
 
@@ -97,14 +100,88 @@ class SchemaTableDirective(Directive):
         return row
 
 
+class VcfFieldsDirective(Directive):
+    """Render a list of VCF header field objects as a table.
+
+    Handles the field classes in :mod:`pav3.vcf`, which carry a name and description and, for INFO
+    and FORMAT fields, a VCF ``Number`` and ``Type``. Columns absent from a field class are omitted.
+    """
+
+    required_arguments = 1
+    has_content = False
+
+    #: Field attribute names paired with their column headings.
+    COLUMNS = (
+        ('name', 'ID'),
+        ('number', 'Number'),
+        ('type_', 'Type'),
+        ('description', 'Description'),
+    )
+
+    def run(self) -> list[nodes.Node]:
+        """Build the table node.
+
+        :return: List containing the table node.
+
+        :raises RuntimeError: If the field list cannot be imported or is empty.
+        """
+        target = self.arguments[0]
+        module_name, _, attr_name = target.rpartition('.')
+
+        try:
+            field_list = getattr(importlib.import_module(module_name), attr_name)
+        except (ImportError, AttributeError) as ex:
+            raise RuntimeError(f'vcf-fields: cannot resolve "{target}": {ex}') from ex
+
+        if not field_list:
+            raise RuntimeError(f'vcf-fields: "{target}" is empty')
+
+        columns = [
+            (attr, heading)
+            for attr, heading in self.COLUMNS
+            if hasattr(field_list[0], attr)
+        ]
+
+        table = nodes.table()
+        group = nodes.tgroup(cols=len(columns))
+        table += group
+
+        for attr, _ in columns:
+            group += nodes.colspec(colwidth=60 if attr == 'description' else 15)
+
+        header = nodes.thead()
+        group += header
+        header += SchemaTableDirective._row(*[heading for _, heading in columns])
+
+        body = nodes.tbody()
+        group += body
+
+        for field in field_list:
+            row = nodes.row()
+
+            for attr, _ in columns:
+                text = str(getattr(field, attr))
+                entry = nodes.entry()
+                node: nodes.Node = (
+                    nodes.Text(text) if attr == 'description' else nodes.literal(text=text)
+                )
+                entry += nodes.paragraph('', '', node)
+                row += entry
+
+            body += row
+
+        return [table]
+
+
 def setup(app: Sphinx) -> dict[str, Any]:
-    """Register the directive.
+    """Register the directives.
 
     :param app: Sphinx application.
 
     :return: Extension metadata.
     """
     app.add_directive('schema-table', SchemaTableDirective)
+    app.add_directive('vcf-fields', VcfFieldsDirective)
 
     return {
         'version': '1.0',
