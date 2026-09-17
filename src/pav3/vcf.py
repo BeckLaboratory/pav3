@@ -13,6 +13,8 @@ __all__ = [
     'VARTYPES',
     'VARTYPE_COMPAT',
     'REF_SPAN_VARTYPE',
+    'SVCLAIM_VARTYPE',
+    'alt_subtype_expr',
     'get_headers',
     'init_vcf_fields',
     'vcf_fields_seq_insdel',
@@ -136,8 +138,13 @@ INFO_FIELDS = [
         'Variant end position on the reference (1-based, inclusive)',
     ),
     InfoField(
+        'SVCLAIM', 'A', 'String',
+        'Claim made by the structural variant call. Valid values are D, J, DJ for abundance, adjacency and both '
+        'respectively',
+    ),
+    InfoField(
         'SUBTYPE', 'A', 'String',
-        'Variant subtype (TD for tandem duplications)',
+        'Variant subtype. TD for a tandem duplication, or for CPX the type of the reference breakpoint (DEL or DUP)',
     ),
     InfoField(
         'CPX_REF_TRACE', 'A', 'String',
@@ -153,7 +160,7 @@ INFO_FIELDS = [
     ),
     InfoField(
         'QUERYREV', 'A', 'Character',
-        'Query sequence orientation vs the reference (+ or -, * if unknown',
+        'Query sequence orientation vs the reference (+ or -, * if unknown)',
     ),
     InfoField(
         'SEQ', 'A', 'String',
@@ -165,22 +172,14 @@ INFO_FIELDS = [
         '\\"chrom:pos-end\\" (1-base, closed coordinates)'
     ),
     InfoField(
-        'HOMREF', 'A', 'String',
-        'Reference homology as a slash-separated pair of integers (upstream/downstream). '
-        'Prefer reference homology for deletions.'
-    ),
-    InfoField(
-        'HOMQRY', 'A', 'String',
-        'Query homology as a slash-separated pair of integers (upstream/downstream). '
-        'Prefer query homology for insertions.'
+        'HOMLEN', 'A', 'Integer',
+        'Length of breakpoint homology, upstream plus downstream. From reference breakpoints for DEL and DUP '
+        'and from query breakpoints for INS and CPX. Not reported for SNV or INV.'
     ),
 ]
 
+# PASS is implicitly defined as the first filter by the VCF specification, so it is not declared here.
 FILTER_FIELDS = [
-    FilterField(
-        'PASS', 'All filters passed',
-    ),
-] + [
     FilterField(name, description)
     for name, description in FILTER_REASON.items()
 ]
@@ -197,6 +196,8 @@ ALT_FIELDS = [
     AltField('DEL', 'Deletion'),
     AltField('INV', 'Inversion'),
     AltField('DUP', 'Duplication'),
+    AltField('DUP:TANDEM', 'Tandem duplication'),
+    AltField('DUP:INVDUP', 'Inverted duplication'),
     AltField('CPX', 'Complex variant'),
 ]
 
@@ -215,10 +216,39 @@ VARTYPE_COMPAT = {
 _MAX_INVALID_REPORT = 10
 """Maximum number of variant IDs named when REF and ALT fail validation."""
 
+
+def alt_subtype_expr() -> pl.Expr:
+    """Get an expression for the subtype carried by a symbolic ALT allele, or null where there is none.
+
+    Duplication subtypes are encoded in the ALT allele ("<DUP:TANDEM>") rather than INFO/SUBTYPE, following the VCF
+    convention of writing a symbolic allele as a colon-separated list of types and subtypes. Records resolving to a
+    non-null subtype here do not repeat it in INFO/SUBTYPE.
+
+    :returns: Expression resolving to the ALT subtype, or null when the subtype stays in INFO/SUBTYPE.
+    """
+    return (
+        pl.when(pl.col('vartype') != 'DUP')
+        .then(None)
+        .when(pl.col('varsubtype') == 'TD')
+        .then(pl.lit('TANDEM'))
+        .when(pl.col('varsubtype') == 'INVDUP')
+        .then(pl.lit('INVDUP'))
+        .otherwise(None)
+        .cast(pl.String)
+    )
+
+
 REF_SPAN_VARTYPE = frozenset({'DEL', 'INV', 'DUP', 'CPX'})
 """Variant types spanning reference bases, which receive an INFO/END annotation.
 
 INS spans no reference bases and SNVs are fully described by REF and ALT, so neither is annotated.
+"""
+
+SVCLAIM_VARTYPE = frozenset({'DEL', 'DUP'})
+"""Variant types requiring an INFO/SVCLAIM annotation on a symbolic ALT allele.
+
+VCF requires a claim for symbolic DEL and DUP alleles. INS and INV carry an implicit adjacency claim, and a
+sequence-resolved REF and ALT pair leaves nothing to disambiguate.
 """
 
 
@@ -588,6 +618,12 @@ def vcf_fields_sym(
 
     :returns: LazyFrame with VCF fields set.
     """
+    subtype_expr = (
+        alt_subtype_expr()
+        if 'varsubtype' in df.collect_schema().names() else
+        pl.lit(None).cast(pl.String)
+    )
+
     with _LockingPysam(ref_fa) as ref_file:
         return (
             df
@@ -607,6 +643,9 @@ def vcf_fields_sym(
                     pl.concat_str(
                         pl.lit('<'),
                         pl.col('vartype').str.to_uppercase(),
+                        pl.when(subtype_expr.is_not_null())
+                        .then(pl.concat_str(pl.lit(':'), subtype_expr))
+                        .otherwise(pl.lit('')),
                         pl.lit('>')
                     )
                     .alias('_vcf_alt')
@@ -869,14 +908,17 @@ def standard_info_fields(
             .alias('_vcf_info')
         )
 
-    if len(cols & {'end', 'vartype'}) == 2:
+    if len(cols & {'end', 'vartype', '_is_sym_alt'}) == 3:
         # END spans the affected reference bases, which htslib uses to compute "rlen" for indexing. Without it,
         # symbolic records index as 1 bp and region queries can miss them.
+        #
+        # Only symbolic records need it. VCF 4.4 and later make END a computed field, and for a sequence-resolved
+        # record REF already gives the span, so writing it there is redundant.
         #
         # Taken from "end" rather than POS plus SVLEN: "pos" and "end" are 0-based half-open, so "end" is already
         # the 1-based inclusive VCF END, and for CPX "varlen" is a query-side length, not a reference span.
         df = df.with_columns(
-            pl.when(pl.col('vartype').is_in(REF_SPAN_VARTYPE))
+            pl.when(pl.col('_is_sym_alt') & pl.col('vartype').is_in(REF_SPAN_VARTYPE))
             .then(
                 pl.col('_vcf_info').list.concat(
                     pl.concat_str(pl.lit('END='), 'end')
@@ -886,9 +928,23 @@ def standard_info_fields(
             .alias('_vcf_info')
         )
 
-    if 'varsubtype' in cols:
+    if len(cols & {'vartype', '_is_sym_alt'}) == 2:
+        # PAV calls deletions and duplications from non-reference adjacencies between aligned segments, never from
+        # a measure of DNA abundance, so the claim is always adjacency ("J"). A deleted segment relocated
+        # elsewhere in the genome would leave abundance unchanged, and PAV has no way to observe that.
         df = df.with_columns(
-            pl.when(pl.col('varsubtype').is_not_null())
+            pl.when(pl.col('_is_sym_alt') & pl.col('vartype').is_in(SVCLAIM_VARTYPE))
+            .then(
+                pl.col('_vcf_info').list.concat(pl.lit('SVCLAIM=J'))
+            )
+            .otherwise('_vcf_info')
+            .alias('_vcf_info')
+        )
+
+    if len(cols & {'varsubtype', 'vartype'}) == 2:
+        # Subtypes the ALT allele already carries (duplications) are not repeated here.
+        df = df.with_columns(
+            pl.when(pl.col('varsubtype').is_not_null() & alt_subtype_expr().is_null())
             .then(
                 pl.col('_vcf_info').list.concat(
                     pl.concat_str(pl.lit('SUBTYPE='), 'varsubtype')
@@ -952,18 +1008,19 @@ def standard_info_fields(
             )
         )
 
-    if '_is_sym_alt' in cols:
-        if 'seq' in cols:
-            df = df.with_columns(
-                pl.when(pl.col('seq').is_not_null())
-                .then(
-                    pl.col('_vcf_info').list.concat(
-                        pl.concat_str(pl.lit('SEQ='), 'seq')
-                    )
+    if len(cols & {'_is_sym_alt', 'seq'}) == 2:
+        # Symbolic records only. REF and ALT already carry the sequence for sequence-resolved records, where SEQ
+        # duplicates it exactly. Upper-cased to match REF and ALT, which are not soft-masked.
+        df = df.with_columns(
+            pl.when(pl.col('_is_sym_alt') & pl.col('seq').is_not_null())
+            .then(
+                pl.col('_vcf_info').list.concat(
+                    pl.concat_str(pl.lit('SEQ='), pl.col('seq').str.to_uppercase())
                 )
-                .otherwise('_vcf_info')
-                .alias('_vcf_info')
             )
+            .otherwise('_vcf_info')
+            .alias('_vcf_info')
+        )
 
     if 'dup' in cols:
         df = df.with_columns(
@@ -988,33 +1045,27 @@ def standard_info_fields(
             .alias('_vcf_info')
         )
 
-    if 'hom_ref' in cols:
-        df = df.with_columns(
-            pl.when(pl.col('hom_ref').is_not_null())
-            .then(
-                pl.col('_vcf_info').list.concat(
-                    pl.concat_str(
-                        pl.lit('HOMREF='),
-                        pl.col('hom_ref').struct.field('up'),
-                        pl.lit('/'),
-                        pl.col('hom_ref').struct.field('dn'),
-                    )
-                )
-            )
-            .otherwise('_vcf_info')
-            .alias('_vcf_info')
+    if len(cols & {'hom_ref', 'hom_qry', 'vartype'}) == 3:
+        # Breakpoint homology as a single length, summing the upstream and downstream sides.
+        #
+        # Reference breakpoints describe a deletion or duplication best and query breakpoints an insertion or
+        # complex variant. SNVs have no homology, and PAV does not refine inversion breakpoints finely enough to
+        # report it.
+        hom_expr = (
+            pl.when(pl.col('vartype').is_in({'DEL', 'DUP'}))
+            .then(pl.col('hom_ref'))
+            .when(pl.col('vartype').is_in({'INS', 'CPX'}))
+            .then(pl.col('hom_qry'))
+            .otherwise(None)
         )
 
-    if 'hom_qry' in cols:
         df = df.with_columns(
-            pl.when(pl.col('hom_qry').is_not_null())
+            pl.when(hom_expr.is_not_null())
             .then(
                 pl.col('_vcf_info').list.concat(
                     pl.concat_str(
-                        pl.lit('HOMQRY='),
-                        pl.col('hom_qry').struct.field('up'),
-                        pl.lit('/'),
-                        pl.col('hom_qry').struct.field('dn'),
+                        pl.lit('HOMLEN='),
+                        hom_expr.struct.field('up') + hom_expr.struct.field('dn'),
                     )
                 )
             )

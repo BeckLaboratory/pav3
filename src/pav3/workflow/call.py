@@ -533,7 +533,6 @@ def merge_haplotypes(
                     )
                     .with_columns(_mg_src_sample_hap_expr())
                     .sort(merge_sort_expr)
-                    .with_columns(agglovar.util.var.id_version_expr())
                     .sink_parquet(next_filename)
                 )
 
@@ -544,12 +543,19 @@ def merge_haplotypes(
 
             concat_chrom_list.append(chrom_next_filename)
 
+            # Version IDs across all passes for this chromosome, not within each one.
+            #
+            # Passing and non-passing variants are merged separately, so a base ID present in both would take the
+            # unversioned ID in each pass and collide. Versioning after the concatenation ranks them together, and
+            # "id_version_expr" ranks on the filter count, so passing variants keep the unversioned ID. IDs carry
+            # the chromosome and variant type, so they cannot collide across chromosomes or merge passes.
             (
                 pl.concat([
                     pl.scan_parquet(filename)
                     for filename in df_chrom_list
                 ])
                 .sort('chrom', 'pos', 'end', 'id')
+                .with_columns(agglovar.util.var.id_version_expr())
                 .sink_parquet(chrom_next_filename)
             )
 

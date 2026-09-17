@@ -29,24 +29,33 @@ https://common-changelog.org/
 - VCF INFO headers declare an accurate `Number`. `END` is `Number=1` and `SVLEN` is `Number=A`, matching the
   reserved keys; all others are `Number=A`. All were previously `Number=.`.
 - VCF `INFO/SVLEN` is always positive. Deletions are no longer negated.
-- VCF INFO values no longer contain literal commas, which VCF reserves as the value delimiter. `DUP`, `HOMREF`,
-  and `HOMQRY` separate values with `/`, and `CPX_REF_TRACE` and `CPX_QRY_TRACE` drop thousands separators. The
-  `trace_ref` and `trace_qry` variant table columns are unchanged.
+- VCF INFO values no longer contain literal commas, which VCF reserves as the value delimiter. `DUP` separates
+  regions with `/`, and `CPX_REF_TRACE` and `CPX_QRY_TRACE` drop thousands separators. The `trace_ref` and
+  `trace_qry` variant table columns are unchanged.
+- VCF `INFO/END` and `INFO/SEQ` are written only for symbolic ALT alleles, where REF and ALT do not carry the
+  span or the sequence. `SEQ` is upper-cased to match REF and ALT.
+- Tandem and inverted duplications are written as `<DUP:TANDEM>` and `<DUP:INVDUP>` rather than `INFO/SUBTYPE`.
+- Replaced VCF `INFO/HOMREF` and `INFO/HOMQRY` with the reserved `INFO/HOMLEN`, summing upstream and downstream
+  homology from reference breakpoints for `DEL` and `DUP` and query breakpoints for `INS` and `CPX`.
 
 ### Added
-- VCF `INFO/END` is written for all types spanning reference bases (`DEL`, `INV`, `DUP`, and `CPX`).
+- VCF `INFO/SVCLAIM` is written as `J` for symbolic `DEL` and `DUP` alleles, which VCF requires. PAV calls these
+  from non-reference adjacencies rather than from a measure of DNA abundance.
 - Documentation page describing the VCF output.
 
 ### Removed
 - VCF `INFO/SVTYPE`. VCF 4.5 deprecates it as redundant with ALT, which carries the type in the symbolic allele
   or in the REF and ALT lengths.
+- The `##FILTER=<ID=PASS>` header. VCF defines PASS implicitly.
 
 ### Fixed
+- Variant IDs were duplicated when a variant merged into both the passing and non-passing haplotype merges. IDs
+  are now versioned across both merges rather than within each.
 - Deletions derived from complex variants were written with an empty VCF `REF`.
 - Insertions at a tandem duplication were written with `REF` matching `ALT`, encoding no variant.
 - Writing a VCF now fails, naming the variants, if a record has an empty `REF`, an empty `ALT`, or a `REF`
   matching its `ALT`.
-- VCF `INFO/HOMQRY` reported reference homology instead of query homology.
+- Query homology was read from the reference homology field.
 - VCF `INFO/DUP` was dropped for variants duplicating an even number of regions.
 - `DUP` and `CPX` records carried no `INFO/END`, so they indexed as 1 bp and could be missed by region queries.
 
