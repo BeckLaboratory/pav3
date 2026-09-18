@@ -79,4 +79,4 @@ def _true_len(
 
     :returns: Length of the first run of True values in `arr`.
     """
-    return int(false_loc[0] if len(false_loc := np.where(~arr)[0]) > 0 else 0)
+    return int(false_loc[0] if len(false_loc := np.where(~arr)[0]) > 0 else arr.shape[0])

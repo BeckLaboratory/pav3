@@ -64,6 +64,16 @@ https://common-changelog.org/
 - Query homology was read from the reference homology field.
 - VCF `INFO/DUP` was dropped for variants duplicating an even number of regions.
 - `DUP` and `CPX` records carried no `INFO/END`, so they indexed as 1 bp and could be missed by region queries.
+- Large deletions reported an empty query region, which wrote `INFO/QUERY` as an inverted range. Deletions now
+  report a 1 bp query region at the breakpoint, matching intra-alignment deletions. Query homology is still
+  measured over the query region between the anchors.
+- Complex variants reported the query region between the untrimmed anchors, which excludes bases duplicated at
+  the variant site, leaving `INFO/QUERY` shorter than `INFO/SVLEN`. They now report the region from the
+  query-reference-trimmed alignments, as insertions do, and take their length from it.
+- Perfect homology was reported as zero when it ran to the end of the compared flank, understating `INFO/HOMLEN`
+  for short variants in low-complexity sequence.
+- The assertion comparing the query-trimmed and query-reference-trimmed reference regions of an alignment
+  interval joined its conditions with `or`, so it passed whenever any one of them held.
 
 ## 3.0.0.dev26 - 2026-08-28
 

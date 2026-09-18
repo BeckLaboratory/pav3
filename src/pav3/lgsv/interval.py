@@ -243,11 +243,16 @@ class AnchoredInterval:
             end_align_index=end_align_index_qryref,
         )
 
+        # The alignment indexes are compared as a set. "pos" and "end" are swapped when the anchors overlap on the
+        # reference (tandem duplication), and reference trimming removes that overlap, so the two regions may take
+        # them in either order while anchoring on the same two alignment records.
         assert (
             self.region_ref_qryref.chrom == self.region_ref.chrom
-            or self.region_ref_qryref.is_rev == self.region_ref.is_rev
-            or self.region_ref_qryref.pos_align_index == self.region_ref.pos_align_index
-            or self.region_ref_qryref.end_align_index == self.region_ref.end_align_index
+            and self.region_ref_qryref.is_rev == self.region_ref.is_rev
+            and (
+                {self.region_ref_qryref.pos_align_index, self.region_ref_qryref.end_align_index}
+                == {self.region_ref.pos_align_index, self.region_ref.end_align_index}
+            )
         ), (
             f'Interval(start={self.start_index}, end={self.end_index}: '
             f'Chrom, index, or orientation mismatch between reference regions: '

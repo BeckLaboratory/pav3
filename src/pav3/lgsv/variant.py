@@ -53,6 +53,8 @@ class Variant(ABC):
         variant call.
     :ivar region_qry: Query region. Only Null in NullVariant. Initialized to interval.region_qry, may be altered by
         variant call.
+    :ivar region_qry_hom: Query region used to compute query homology. If None, `region_qry` is used. Set by variant
+        calls that report a query region other than the one homology is measured over.
     :ivar region_ref_qrytrim: Reference region trimmed by query. Initially set to region_ref, but may be altered by
         the variant call. It is stored here to preserve the original reference region if it is changed.
     :ivar vartype: Variant type.
@@ -86,6 +88,7 @@ class Variant(ABC):
     var_region_kde: Optional[VarRegionKde]
     region_ref: Optional[Region]
     region_qry: Optional[Region]
+    region_qry_hom: Optional[Region]
     region_ref_qrytrim: Optional[Region]
     vartype: str
     varsubtype: Optional[str]
@@ -168,6 +171,11 @@ class Variant(ABC):
         # region must add them separately. A variant taking "region_qry" from the query-reference-trimmed
         # alignments sets this, and its query region already covers them.
         self.qry_spans_outer_dup = False
+
+        # Query region homology is measured over. A deletion reports a 1 bp query region at the breakpoint (see
+        # DeletionVariant), but the sequence it deletes is flanked by the query region between the anchors, which is
+        # empty when no bases were inserted. Falls back to "region_qry" when None.
+        self.region_qry_hom = None
 
         self.vartype = 'NULL'
         self.varsubtype = None
@@ -428,11 +436,13 @@ class Variant(ABC):
     @property
     def hom_qry(self) -> dict[str, int]:
         """Query homology."""
+        region_qry = self.region_qry_hom if self.region_qry_hom is not None else self.region_qry
+
         hom = perfect_homology(
             seq_var=self.seq,
-            seq_ref=self.caller_resources.cache_qry[self.region_qry.chrom],
-            pos=self.region_qry.pos,
-            end=self.region_qry.end,
+            seq_ref=self.caller_resources.cache_qry[region_qry.chrom],
+            pos=region_qry.pos,
+            end=region_qry.end,
             is_rev=self.qry_rev,
         )
 
@@ -752,7 +762,20 @@ class DeletionVariant(Variant):
         self.varlen = interval.len_outer_del
 
         self.region_ref = interval.region_ref
-        self.region_qry = interval.region_qry
+
+        # Report a 1 bp query region at the deletion breakpoint. The query region between the anchors is empty for a
+        # deletion with no inserted bases, which reports as an inverted range in 1-based coordinates (INFO/QUERY), and
+        # spans the inserted bases when there are any, which the paired insertion record already covers (see
+        # "_complete_anno_variant"). Intra-alignment deletions report the same 1 bp region. Homology is still measured
+        # over the query region between the anchors.
+        self.region_qry = Region(
+            interval.region_qry.chrom,
+            interval.region_qry.pos,
+            interval.region_qry.pos + 1,
+            interval.region_qry.is_rev,
+        )
+
+        self.region_qry_hom = interval.region_qry
 
         # Score
         score_model = self.caller_resources.score_model
@@ -1041,12 +1064,16 @@ class ComplexVariant(Variant):
             return
 
         # Set base properties
-        len_dup = interval.len_outer_dup
-
         self.vartype = 'CPX'
         self.region_ref = interval.region_ref
-        self.region_qry = interval.region_qry
-        self.varlen = interval.len_qry + len_dup
+
+        # The query region comes from the query-reference-trimmed alignments so that it spans the duplicated bases of
+        # a tandem duplication at the variant site. Between the untrimmed anchors it excludes them, because both
+        # anchors cover those bases.
+        self.region_qry = interval.region_qry_qryref
+        self.qry_spans_outer_dup = True
+
+        self.varlen = len(self.region_qry)
 
         # Pre-score and check
         score_model = self.caller_resources.score_model
