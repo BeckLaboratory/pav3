@@ -228,6 +228,94 @@ def id_and_version(
     )
 
 
+def add_ins_derived(
+        df: pl.LazyFrame,
+        collect_list: dict,
+        ref_fa: Path | str,
+) -> None:
+    """Identify duplications that can be derived from insertions.
+
+    An insertion placing a copy of a reference region is also a duplication of that region. The regions are
+    annotated on the insertion by `pav3.lgsv.variant.Variant.seg_aligned_to_dup`, and one duplication is emitted
+    for each.
+
+    Note that the final variant ID must be set before calling this function or variant IDs linking derived variants
+    to their sources will be broken ("id" column in `df`).
+
+    The sequence is the reference over the duplicated region. An insertion placed inside the region it duplicates
+    is not described by that sequence, so it is kept out of the VCF (see `pav3.vcf.standard_info_fields`) while
+    remaining available in the variant tables.
+
+    :param df: Table of variant calls.
+    :param collect_list: Dictionary of variant tables to collect.
+    :param ref_fa: Reference FASTA filename, used to fill the sequence of the duplicated region.
+    """
+    col_set = set(df.collect_schema().names())
+
+    if 'dup' not in col_set:
+        return
+
+    df_derived = (
+        df
+        .filter(
+            pl.col('vartype') == 'INS',
+            pl.col('dup').is_not_null() & (pl.col('dup').list.len() > 0),
+        )
+        .select(
+            'qry_id', 'qry_rev', 'var_score', 'align_source',
+            *[pl.lit(None).alias(col).cast(schema.VARIANT[col]) for col in ['qry_pos', 'qry_end']],
+            pl.col('id').alias('derived'),
+            pl.lit('DERIVED').alias('call_source'),
+            pl.col('filter').list.concat([pl.lit(['DERIVED']).cast(pl.List(pl.String))]).alias('filter'),
+            pl.lit('DUP').cast(schema.VARIANT['vartype']).alias('vartype'),
+            (
+                pl.when(pl.col('varsubtype') == 'TD')
+                .then(pl.lit('TD'))
+                .otherwise(None)
+                .cast(schema.VARIANT['varsubtype'])
+                .alias('varsubtype')
+            ),
+            pl.col('dup'),
+        )
+        .explode('dup')
+        .select(
+            pl.exclude('dup'),
+            pl.col('dup').struct.field('chrom').cast(schema.VARIANT['chrom']).alias('chrom'),
+            pl.col('dup').struct.field('pos').cast(schema.VARIANT['pos']).alias('pos'),
+            pl.col('dup').struct.field('end').cast(schema.VARIANT['end']).alias('end'),
+        )
+        .with_columns(
+            (pl.col('end') - pl.col('pos')).cast(schema.VARIANT['varlen']).alias('varlen')
+        )
+    )
+
+    # Rows are grouped by chromosome while the sequences are read so the sequence cache holds one chromosome at a
+    # time, then restored to their original order.
+    with LRUSequenceCache(str(ref_fa), 1) as ref_cache:
+        df_derived = (
+            df_derived
+            .with_row_index('_seq_index')
+            .sort('chrom')
+            .with_columns(
+                pl.struct('chrom', 'pos', 'end')
+                .map_elements(
+                    lambda vals: ref_cache[vals['chrom']][vals['pos']:vals['end']],
+                    return_dtype=pl.String,
+                )
+                .cast(schema.VARIANT['seq'])
+                .alias('seq')
+            )
+            .sort('_seq_index')
+            .drop('_seq_index')
+            .collect()  # Must collect while the sequence cache is open
+            .lazy()
+        )
+
+    collect_list['dup'].append(
+        df_derived.with_columns(id_nonsnv().alias('id'))
+    )
+
+
 def apply_trim_filter(
         df,
         df_trim

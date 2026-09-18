@@ -60,7 +60,12 @@ class Variant(ABC):
     :ivar varlen: Variant length.
     :ivar filter_set: Set of filter strings initialized to alignment filters.
     :ivar call_source: Type of evidence supporting the variant call.
-    :ivar var_score: Variant score.
+    :ivar var_score: Variant score. Includes a penalty for an off-target variant of the opposite type, which keeps
+        large substitutions resolving to complex variants when the optimal path through an alignment is chosen.
+    :ivar var_score_primary: Variant score with the off-target penalty removed, or None where there is no
+        off-target variant. Replaces "var_score" in emitted records without altering the score the caller used.
+    :ivar off_target_del: Deletion at the site of an insertion, or None. Emitted as its own record.
+    :ivar off_target_ins: Insertion at the site of a deletion, or None. Emitted as its own record.
     :ivar templ_res: Template resolution flag. Set to True if a variant is aligned across segments and False if variant
         segments are unaligned. Common in complex variants, smaller template switches are left unaligned.
     :ivar seq: Variant sequence.
@@ -88,6 +93,9 @@ class Variant(ABC):
     filter_set: set[str]
     call_source: str
     var_score: float
+    var_score_primary: Optional[float]
+    off_target_del: Optional['Variant']
+    off_target_ins: Optional['Variant']
     templ_res: bool
     seq: Optional[str]
     is_patch: bool
@@ -155,9 +163,25 @@ class Variant(ABC):
         self.region_qry = interval.region_qry if interval is not None else None  # Fields: qry_id, qry_pos, qry_end
         self.region_ref_qrytrim = self.region_ref
 
+        # Whether "region_qry" spans bases duplicated at the variant site. The query region between the anchors
+        # excludes them, because both anchor alignments cover them, so a variant reading its sequence from that
+        # region must add them separately. A variant taking "region_qry" from the query-reference-trimmed
+        # alignments sets this, and its query region already covers them.
+        self.qry_spans_outer_dup = False
+
         self.vartype = 'NULL'
         self.varsubtype = None
         self.varlen = 0
+
+        self.var_score_primary = None
+        self.off_target_del = None
+        self.off_target_ins = None
+
+        # Penalty carried by "var_score" for an off-target variant, removed when one is emitted separately.
+        self._off_target_penalty = 0.0
+
+        # Set on a variant built as another variant's off-target. Such a variant never looks for its own.
+        self._allow_off_target = False
 
         self.filter_set = set((
             interval.df_segment
@@ -375,7 +399,11 @@ class Variant(ABC):
                 #
                 # The duplicated bases are taken from the reference over the same region reported by INFO/DUP (see
                 # "seg_aligned_to_dup"), so sequence divergence between the two copies is not represented here.
-                if self.interval is not None and self.interval.len_ref < 0:
+                if (
+                        self.interval is not None
+                        and self.interval.len_ref < 0
+                        and not self.qry_spans_outer_dup
+                ):
                     self._seq += self.caller_resources.cache_ref[
                         self.region_ref_qrytrim.chrom
                     ][
@@ -462,25 +490,53 @@ class Variant(ABC):
             (add_set if add_set is not None else set())
         )
 
-    def row(
+    def _row(
             self,
             add_set: Optional[set[str]] = None
     ) -> dict[str, Any]:
-        """Get a dict of values representing a variant call record (not including "id").
-
-        The order of records is undefined, the final table should be ordered by the variant schema. The "id" column
-        should be set on the final table, it is not computed by the variant objects.
+        """Get a dict of values for this variant call alone, ignoring any off-target variant.
 
         :param add_set: Optional set of additional row names to include.
 
         :returns: Variant call record as a dict.
         """
-        self.complete_anno()
-
         if self.is_null:
             raise ValueError(f'Cannot get row for null variant: {self}')
 
-        return {k: getattr(self, k) for k in self.row_set(add_set)}
+        row = {k: getattr(self, k) for k in self.row_set(add_set)}
+
+        if self.var_score_primary is not None:
+            row['var_score'] = self.var_score_primary
+
+        return row
+
+    def rows(
+            self,
+            add_set: Optional[set[str]] = None
+    ) -> list[dict[str, Any]]:
+        """Get a list of dicts representing variant call records (not including "id").
+
+        Returns the variant call followed by its off-target variant, if one was found. An insertion over deleted
+        reference bases and a deletion with inserted bases each describe two variants, and both are emitted.
+
+        The order of records is undefined, the final table should be ordered by the variant schema. The "id" column
+        should be set on the final table, it is not computed by the variant objects. "var_index" must be assigned
+        per record by the caller, it is not unique across the records returned here.
+
+        :param add_set: Optional set of additional row names to include.
+
+        :returns: List of variant call records as dicts.
+        """
+        self.complete_anno()
+
+        row_list = [self._row(add_set)]
+
+        for off_target in (self.off_target_del, self.off_target_ins):
+            if off_target is not None:
+                off_target.complete_anno()
+                row_list.append(off_target._row(add_set))
+
+        return row_list
 
     def seg_aligned_to_dup(
             self,
@@ -550,14 +606,20 @@ class InsertionVariant(Variant):
             interval: AnchoredInterval,
             caller_resources: CallerResources,
             var_region_kde: VarRegionKde,
-            _try_td: bool = False,
+            allow_off_target: bool = False,
     ) -> None:
-        """Create variant call."""
+        """Create variant call.
+
+        :param interval: Alignment interval.
+        :param caller_resources: Caller resources.
+        :param var_region_kde: Variant region KDE.
+        :param allow_off_target: Build this call as another variant's off-target insertion. Accepts intervals
+            where deleted reference bases outweigh the inserted bases, and drops the penalty for them from the
+            score. A variant built this way never looks for an off-target of its own.
+        """
         Variant.__init__(self, interval, caller_resources, var_region_kde)
         self.vartype = 'INS'
-
-        # if _try_td:  # Called by TandemDuplicationVariant constructor, do not try to resolve INS variant
-        #     return
+        self._allow_off_target = allow_off_target
 
         # Variant lengths
         seg_lens = sorted(interval.seg_len_or_dup + interval.seg_len_unaligned, reverse=True)
@@ -570,14 +632,26 @@ class InsertionVariant(Variant):
         len_dup = interval.len_outer_dup
         len_del = interval.len_outer_del
 
-        self.varlen = len_aligned + len_unaligned + len_dup - len_del
+        # "varlen" is the inserted length. Deleted reference bases are emitted as their own variant (see
+        # "_complete_anno_variant"), so subtracting them here would leave the pair short by that length.
+        self.varlen = len_aligned + len_unaligned + len_dup
 
         if self.varlen <= 0:
+            # Nothing inserted
+            return
+
+        if not allow_off_target and self.varlen - len_del <= 0:
             # If deleted segment is larger than inserted/duplicated segments, never call INS
             return
 
         # Score
         score_model = self.caller_resources.score_model
+
+        # Gap: Outer deletion. Dropped for an off-target call, and removed from the emitted score when the
+        # deletion is emitted separately, but kept on "var_score" so the optimal path is unaffected.
+        self._off_target_penalty = (
+            score_model.gap(len_del) * score_model.off_variant() if not allow_off_target else 0.0
+        )
 
         self.var_score = (
             # Gap: Longest of aligned, unaligned, or duplicated segments
@@ -589,12 +663,16 @@ class InsertionVariant(Variant):
                 for _ in seg_lens[1:]
             ) * score_model.off_variant()
 
-            # Gap: Outer deletion
-            + score_model.gap(len_del) * score_model.off_variant()
+            + self._off_target_penalty
         )
 
-        # Set breakpoints on reference-trimmed coordinates
+        # Set breakpoints on reference-trimmed coordinates.
+        #
+        # The query region comes from the same alignments so that it spans the duplicated bases of a tandem
+        # duplication. Between the untrimmed anchors it would be empty, since both anchors cover those bases.
         self.region_ref = interval.region_ref_qryref
+        self.region_qry = interval.region_qry_qryref
+        self.qry_spans_outer_dup = True
 
         # Finalize
         self.seg_aligned_to_dup()
@@ -616,8 +694,19 @@ class InsertionVariant(Variant):
         self._found_variant = True
 
     def _complete_anno_variant(self) -> None:
-        """Complete annotations."""
-        pass
+        """Complete annotations, finding a deletion at the insertion site."""
+        if self._allow_off_target:
+            return
+
+        off_target = DeletionVariant(
+            self.interval, self.caller_resources, self.var_region_kde, allow_off_target=True
+        )
+
+        if off_target.is_null:
+            return
+
+        self.off_target_del = off_target
+        self.var_score_primary = self.var_score - self._off_target_penalty
 
     @classmethod
     def _row_set(cls) -> set[str]:
@@ -637,13 +726,27 @@ class DeletionVariant(Variant):
             interval: AnchoredInterval,
             caller_resources: CallerResources,
             var_region_kde: VarRegionKde,
+            allow_off_target: bool = False,
     ) -> None:
-        """Create variant call."""
+        """Create variant call.
+
+        :param interval: Alignment interval.
+        :param caller_resources: Caller resources.
+        :param var_region_kde: Variant region KDE.
+        :param allow_off_target: Build this call as another variant's off-target deletion. Accepts intervals where
+            inserted bases outweigh the deleted reference bases, and drops the penalty for them from the score. A
+            variant built this way never looks for an off-target of its own.
+        """
         Variant.__init__(self, interval, caller_resources, var_region_kde)
         self.vartype = 'DEL'
+        self._allow_off_target = allow_off_target
 
-        # Stop for incoempatible signatures
-        if interval.len_outer_del - interval.len_qry <= 0:
+        if interval.len_outer_del <= 0:
+            # Nothing deleted
+            return
+
+        # Stop for incompatible signatures
+        if not allow_off_target and interval.len_outer_del - interval.len_qry <= 0:
             return
 
         self.varlen = interval.len_outer_del
@@ -654,16 +757,37 @@ class DeletionVariant(Variant):
         # Score
         score_model = self.caller_resources.score_model
 
+        # Query segements (off-variant). Dropped for an off-target call, and removed from the emitted score when
+        # the insertion is emitted separately, but kept on "var_score" so the optimal path is unaffected.
+        self._off_target_penalty = (
+            sum([score_model.gap(_) for _ in interval.seg_len]) * score_model.off_variant()
+            if not allow_off_target else 0.0
+        )
+
         self.var_score = (
             # Deletion gap
             score_model.gap(self.varlen)
 
-            # Query segements (off-variant)
-            + sum([score_model.gap(_) for _ in interval.seg_len]) * score_model.off_variant()
+            + self._off_target_penalty
         )
 
         self.resolved_templ = True
         self._found_variant = True
+
+    def _complete_anno_variant(self) -> None:
+        """Complete annotations, finding an insertion at the deletion site."""
+        if self._allow_off_target:
+            return
+
+        off_target = InsertionVariant(
+            self.interval, self.caller_resources, self.var_region_kde, allow_off_target=True
+        )
+
+        if off_target.is_null:
+            return
+
+        self.off_target_ins = off_target
+        self.var_score_primary = self.var_score - self._off_target_penalty
 
     @classmethod
     def _row_set(cls) -> set[str]:

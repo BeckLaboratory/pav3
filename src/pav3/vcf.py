@@ -1011,8 +1011,18 @@ def standard_info_fields(
     if len(cols & {'_is_sym_alt', 'seq'}) == 2:
         # Symbolic records only. REF and ALT already carry the sequence for sequence-resolved records, where SEQ
         # duplicates it exactly. Upper-cased to match REF and ALT, which are not soft-masked.
+        #
+        # Derived records are left out. A derived duplication carries the reference over the duplicated region,
+        # which does not describe an insertion placed inside the region it duplicates. POS, END, and SVLEN
+        # describe the variant, and the sequence remains available in the variant tables.
+        not_derived = (
+            (pl.col('call_source') != 'DERIVED')
+            if 'call_source' in cols else
+            pl.lit(True)
+        )
+
         df = df.with_columns(
-            pl.when(pl.col('_is_sym_alt') & pl.col('seq').is_not_null())
+            pl.when(pl.col('_is_sym_alt') & pl.col('seq').is_not_null() & not_derived)
             .then(
                 pl.col('_vcf_info').list.concat(
                     pl.concat_str(pl.lit('SEQ='), pl.col('seq').str.to_uppercase())

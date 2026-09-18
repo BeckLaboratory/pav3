@@ -88,6 +88,9 @@ class AnchoredInterval:
     :ivar df_segment: Table describing aligned and unaligned segments between two aligned anchors.
     :ivar region_ref: Reference region between the anchors.
     :ivar region_qry: Query region between the anchors.
+    :ivar region_qry_qryref: Query region between the anchors in query-reference-trimmed alignments. Unlike
+        `region_qry`, this spans tandem-duplicated bases: reference trimming removes the reference overlap between
+        the anchors, which takes the same bases off one anchor's query span and leaves them between the anchors.
     :ivar len_ref: Distance between the anchors on the reference. May be a negative number (i.e. Tandem Duplications).
     :ivar len_qry: Distance between the anchors on the query.
     :ivar score_gap_sum_aligned: Gap sum score for aligned segments.
@@ -102,6 +105,7 @@ class AnchoredInterval:
     df_segment: pl.DataFrame
     region_ref: Region
     region_qry: Region
+    region_qry_qryref: Region
     len_ref: int
     len_qry: int
 
@@ -248,6 +252,13 @@ class AnchoredInterval:
             f'Interval(start={self.start_index}, end={self.end_index}: '
             f'Chrom, index, or orientation mismatch between reference regions: '
             f'qry-trimmed={self.region_ref}, qry-ref-trimmed={self.region_ref_qryref}'
+        )
+
+        self.region_qry_qryref = Region(
+            qry_id,
+            self.df_segment_qryref[0, 'qry_end'],
+            self.df_segment_qryref[-1, 'qry_pos'],
+            self.is_rev,
         )
 
         # Outer DEL/DUP

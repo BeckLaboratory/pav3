@@ -497,30 +497,36 @@ rule call_inter:
                     print(f'Completing variant: {var}', file=caller_resources.log_file, flush=True)
 
                 var.var_index = var_index
-                var_index += 1
 
                 try:
-                    row = var.row({'var_index'})
+                    row_list = var.rows({'var_index'})
                 except Exception as e:
                     traceback.print_exc()
 
-                    raise ValueError(f'Failed to get variant row for "{var}": {e}') from e
+                    raise ValueError(f'Failed to get variant rows for "{var}": {e}') from e
 
-                if row['vartype'] not in df_list.keys():
-                    raise ValueError(f'Unexpected variant type: "{row["vartype"]}" in "{var}"')
+                # A variant emits its own record followed by an off-target record where one was found. "var_index"
+                # is assigned per record so it stays unique across the callset, and the segment and reference
+                # trace tables key on the first record, which is the variant itself.
+                for row in row_list:
+                    row['var_index'] = var_index
+                    var_index += 1
 
-                df_list[row['vartype']].append(row)
+                    if row['vartype'] not in df_list.keys():
+                        raise ValueError(f'Unexpected variant type: "{row["vartype"]}" in "{var}"')
+
+                    df_list[row['vartype']].append(row)
 
                 if var.df_segment is not None:
                     df_segment_list.append(
                         var.df_segment
-                        .with_columns(pl.lit(row['var_index']).alias('var_index'))
+                        .with_columns(pl.lit(row_list[0]['var_index']).alias('var_index'))
                     )
 
                 if var.df_ref_trace is not None:
                     df_reftrace_list.append(
                         var.df_ref_trace
-                        .with_columns(pl.lit(row['var_index']).alias('var_index'))
+                        .with_columns(pl.lit(row_list[0]['var_index']).alias('var_index'))
                     )
 
             # Collect and write

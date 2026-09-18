@@ -33,7 +33,8 @@ https://common-changelog.org/
   regions with `/`, and `CPX_REF_TRACE` and `CPX_QRY_TRACE` drop thousands separators. The `trace_ref` and
   `trace_qry` variant table columns are unchanged.
 - VCF `INFO/END` and `INFO/SEQ` are written only for symbolic ALT alleles, where REF and ALT do not carry the
-  span or the sequence. `SEQ` is upper-cased to match REF and ALT.
+  span or the sequence. `SEQ` is upper-cased to match REF and ALT, and is not written for derived variants, where
+  it does not describe the alternate allele.
 - Tandem and inverted duplications are written as `<DUP:TANDEM>` and `<DUP:INVDUP>` rather than `INFO/SUBTYPE`.
 - Replaced VCF `INFO/HOMREF` and `INFO/HOMQRY` with the reserved `INFO/HOMLEN`, summing upstream and downstream
   homology from reference breakpoints for `DEL` and `DUP` and query breakpoints for `INS` and `CPX`.
@@ -41,6 +42,11 @@ https://common-changelog.org/
 ### Added
 - VCF `INFO/SVCLAIM` is written as `J` for symbolic `DEL` and `DUP` alleles, which VCF requires. PAV calls these
   from non-reference adjacencies rather than from a measure of DNA abundance.
+- Duplications derived from insertions placing a copy of a reference region. A tandem-duplication insertion
+  derives a tandem duplication.
+- Insertions over deleted reference bases and deletions with inserted bases now emit both variants instead of the
+  larger one alone. The smaller component was previously discarded, leaving an allele that reported no inserted
+  sequence.
 - Documentation page describing the VCF output.
 
 ### Removed

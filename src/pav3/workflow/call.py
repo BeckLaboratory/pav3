@@ -242,6 +242,13 @@ def _integrate_sources(
                 ref_fa=pav3.pipeline.expand_fofn(input['ref_fofn'])[0],
             )
 
+        # Add duplications derived from insertions placing a copy of a reference region
+        pav3.call.integrate.add_ins_derived(
+            df=df,
+            collect_list=collect_list,
+            ref_fa=pav3.pipeline.expand_fofn(input['ref_fofn'])[0],
+        )
+
         # Aggregate if type is split over multiple inputs. `df` is already a disk-backed scan (materialized above),
         # so this keeps memory bounded even when several sources accumulate in `collect_list`.
         if not do_write or len(collect_list[vartype]) > 0:

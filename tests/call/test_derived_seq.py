@@ -33,13 +33,20 @@ def ref_fa(tmp_path):
 
 # --- Variant.seq: tandem duplication ---
 
-def _seq_stub(len_ref: int, qry_seq: str = '', dup_pos: int = 100, dup_end: int = 140) -> SimpleNamespace:
+def _seq_stub(
+        len_ref: int,
+        qry_seq: str = '',
+        dup_pos: int = 100,
+        dup_end: int = 140,
+        qry_spans_outer_dup: bool = False,
+) -> SimpleNamespace:
     """Build the attributes "Variant.seq" reads for a non-DEL variant.
 
     :param len_ref: Reference distance between anchors. Negative for a tandem duplication.
     :param qry_seq: Query sequence between the anchors.
     :param dup_pos: Start of the duplicated reference region.
     :param dup_end: End of the duplicated reference region.
+    :param qry_spans_outer_dup: Whether the query region already covers the duplicated bases.
     """
     return SimpleNamespace(
         is_null=False,
@@ -47,6 +54,7 @@ def _seq_stub(len_ref: int, qry_seq: str = '', dup_pos: int = 100, dup_end: int 
         _seq=None,
         vartype='INS',
         qry_rev=False,
+        qry_spans_outer_dup=qry_spans_outer_dup,
         caller_resources=SimpleNamespace(cache_ref={'chr1': REF_SEQ}, cache_qry={'qry1': qry_seq}),
         region_qry=SimpleNamespace(chrom='qry1', pos=0, end=len(qry_seq)),
         region_ref_qrytrim=SimpleNamespace(chrom='chr1', pos=dup_pos, end=dup_end),
@@ -54,19 +62,32 @@ def _seq_stub(len_ref: int, qry_seq: str = '', dup_pos: int = 100, dup_end: int 
     )
 
 
-def test_tandem_dup_insertion_seq_is_not_empty():
-    """A pure tandem duplication has no query bases between anchors but must still carry sequence."""
+def test_tandem_dup_seq_falls_back_to_the_reference():
+    """Where the query region excludes the duplicated bases, they are read from the reference."""
     seq = Variant.seq.fget(_seq_stub(len_ref=-40))
 
     assert seq == REF_SEQ[100:140]
     assert len(seq) == 40
 
 
-def test_tandem_dup_insertion_seq_includes_query_bases():
-    """A duplication with additional inserted bases carries both."""
+def test_tandem_dup_seq_reference_fallback_keeps_query_bases():
+    """The reference fallback appends to whatever the query region holds."""
     seq = Variant.seq.fget(_seq_stub(len_ref=-40, qry_seq='TTTT'))
 
     assert seq == 'TTTT' + REF_SEQ[100:140]
+
+
+def test_tandem_dup_seq_uses_query_when_region_spans_the_duplication():
+    """A query region covering the duplicated bases is used as-is, without the reference fallback.
+
+    Insertions take their query region from the query-reference-trimmed alignments, which span the duplicated
+    bases, so appending the reference copy would double them.
+    """
+    dup_seq = 'G' * 40
+    seq = Variant.seq.fget(_seq_stub(len_ref=-40, qry_seq=dup_seq, qry_spans_outer_dup=True))
+
+    assert seq == dup_seq
+    assert len(seq) == 40
 
 
 def test_insertion_without_duplication_is_unchanged():
