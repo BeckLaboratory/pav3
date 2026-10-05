@@ -91,6 +91,10 @@ class AnchoredInterval:
     :ivar region_qry_qryref: Query region between the anchors in query-reference-trimmed alignments. Unlike
         `region_qry`, this spans tandem-duplicated bases: reference trimming removes the reference overlap between
         the anchors, which takes the same bases off one anchor's query span and leaves them between the anchors.
+    :ivar qryref_spans_outer_dup: True if `region_qry_qryref` spans the bases duplicated at the variant site.
+        Reference trimming does not always resolve the overlap between the anchors, and a variant taking its
+        query region from the query-reference-trimmed alignments must add the duplicated bases separately when
+        this is False.
     :ivar len_ref: Distance between the anchors on the reference. May be a negative number (i.e. Tandem Duplications).
     :ivar len_qry: Distance between the anchors on the query.
     :ivar score_gap_sum_aligned: Gap sum score for aligned segments.
@@ -106,6 +110,7 @@ class AnchoredInterval:
     region_ref: Region
     region_qry: Region
     region_qry_qryref: Region
+    qryref_spans_outer_dup: bool
     len_ref: int
     len_qry: int
 
@@ -269,6 +274,14 @@ class AnchoredInterval:
         # Outer DEL/DUP
         self.len_outer_del = max(self.len_ref, 0)
         self.len_outer_dup = max(-self.len_ref, 0)
+
+        # Reference trimming removes the reference overlap between the anchors, which exposes the bases duplicated at
+        # the variant site in the query region between them. It does not always resolve the overlap, in which case the
+        # query-reference-trimmed region is no wider than the query-trimmed one and the duplicated bases appear in no
+        # query region at all.
+        self.qryref_spans_outer_dup = (
+            len(self.region_qry_qryref) == self.len_qry + self.len_outer_dup
+        )
 
         # Length of segments
         self.seg_len_aligned = sorted(

@@ -53,8 +53,9 @@ class Variant(ABC):
         variant call.
     :ivar region_qry: Query region. Only Null in NullVariant. Initialized to interval.region_qry, may be altered by
         variant call.
-    :ivar region_qry_hom: Query region used to compute query homology. If None, `region_qry` is used. Set by variant
-        calls that report a query region other than the one homology is measured over.
+    :ivar region_qry_seq: Query region the variant sequence and query homology are read from. If None, `region_qry`
+        is used. Set by variant calls that report a query region other than the one their sequence occupies. Homology
+        matches the variant sequence against the flanks of the region it was read from, so both use this region.
     :ivar region_ref_qrytrim: Reference region trimmed by query. Initially set to region_ref, but may be altered by
         the variant call. It is stored here to preserve the original reference region if it is changed.
     :ivar vartype: Variant type.
@@ -88,7 +89,7 @@ class Variant(ABC):
     var_region_kde: Optional[VarRegionKde]
     region_ref: Optional[Region]
     region_qry: Optional[Region]
-    region_qry_hom: Optional[Region]
+    region_qry_seq: Optional[Region]
     region_ref_qrytrim: Optional[Region]
     vartype: str
     varsubtype: Optional[str]
@@ -172,10 +173,11 @@ class Variant(ABC):
         # alignments sets this, and its query region already covers them.
         self.qry_spans_outer_dup = False
 
-        # Query region homology is measured over. A deletion reports a 1 bp query region at the breakpoint (see
-        # DeletionVariant), but the sequence it deletes is flanked by the query region between the anchors, which is
-        # empty when no bases were inserted. Falls back to "region_qry" when None.
-        self.region_qry_hom = None
+        # Query region the variant sequence and query homology are read from. Variant calls that report a query
+        # region other than the one their sequence occupies set this: a deletion reports a 1 bp query region at the
+        # breakpoint (see DeletionVariant), and an insertion does the same when the duplicated bases it inserts
+        # appear in no query region (see InsertionVariant). Falls back to "region_qry" when None.
+        self.region_qry_seq = None
 
         self.vartype = 'NULL'
         self.varsubtype = None
@@ -390,11 +392,12 @@ class Variant(ABC):
                 ]
 
             else:
+                region_qry = self.region_qry_seq if self.region_qry_seq is not None else self.region_qry
 
                 self._seq = self.caller_resources.cache_qry[
-                    self.region_qry.chrom
+                    region_qry.chrom
                 ][
-                    self.region_qry.pos:self.region_qry.end
+                    region_qry.pos:region_qry.end
                 ]
 
                 if self.qry_rev:
@@ -436,7 +439,7 @@ class Variant(ABC):
     @property
     def hom_qry(self) -> dict[str, int]:
         """Query homology."""
-        region_qry = self.region_qry_hom if self.region_qry_hom is not None else self.region_qry
+        region_qry = self.region_qry_seq if self.region_qry_seq is not None else self.region_qry
 
         hom = perfect_homology(
             seq_var=self.seq,
@@ -677,12 +680,26 @@ class InsertionVariant(Variant):
         )
 
         # Set breakpoints on reference-trimmed coordinates.
-        #
-        # The query region comes from the same alignments so that it spans the duplicated bases of a tandem
-        # duplication. Between the untrimmed anchors it would be empty, since both anchors cover those bases.
         self.region_ref = interval.region_ref_qryref
-        self.region_qry = interval.region_qry_qryref
-        self.qry_spans_outer_dup = True
+
+        if interval.qryref_spans_outer_dup:
+            # The query region comes from the same alignments so that it spans the duplicated bases of a tandem
+            # duplication. Between the untrimmed anchors it would be empty, since both anchors cover those bases.
+            self.region_qry = interval.region_qry_qryref
+            self.qry_spans_outer_dup = True
+
+        else:
+            # Reference trimming left the anchors overlapping, so the duplicated bases appear in no query region and
+            # "seq" takes them from the reference. The query region between the anchors is then empty for a variant
+            # inserting nothing else, which reports as an inverted range, so report 1 bp at the breakpoint.
+            self.region_qry = Region(
+                interval.region_qry.chrom,
+                interval.region_qry.pos,
+                max(interval.region_qry.end, interval.region_qry.pos + 1),
+                interval.region_qry.is_rev,
+            )
+
+            self.region_qry_seq = interval.region_qry
 
         # Finalize
         self.seg_aligned_to_dup()
@@ -775,7 +792,7 @@ class DeletionVariant(Variant):
             interval.region_qry.is_rev,
         )
 
-        self.region_qry_hom = interval.region_qry
+        self.region_qry_seq = interval.region_qry
 
         # Score
         score_model = self.caller_resources.score_model
@@ -1064,16 +1081,24 @@ class ComplexVariant(Variant):
             return
 
         # Set base properties
+        len_dup = interval.len_outer_dup
+
         self.vartype = 'CPX'
         self.region_ref = interval.region_ref
 
-        # The query region comes from the query-reference-trimmed alignments so that it spans the duplicated bases of
-        # a tandem duplication at the variant site. Between the untrimmed anchors it excludes them, because both
-        # anchors cover those bases.
-        self.region_qry = interval.region_qry_qryref
-        self.qry_spans_outer_dup = True
+        if interval.qryref_spans_outer_dup:
+            # The query region comes from the query-reference-trimmed alignments so that it spans the duplicated bases
+            # of a tandem duplication at the variant site. Between the untrimmed anchors it excludes them, because
+            # both anchors cover those bases.
+            self.region_qry = interval.region_qry_qryref
+            self.qry_spans_outer_dup = True
 
-        self.varlen = len(self.region_qry)
+        else:
+            # Reference trimming left the anchors overlapping, so the duplicated bases appear in no query region and
+            # "seq" takes them from the reference.
+            self.region_qry = interval.region_qry
+
+        self.varlen = interval.len_qry + len_dup
 
         # Pre-score and check
         score_model = self.caller_resources.score_model

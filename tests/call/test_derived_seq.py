@@ -57,6 +57,7 @@ def _seq_stub(
         qry_spans_outer_dup=qry_spans_outer_dup,
         caller_resources=SimpleNamespace(cache_ref={'chr1': REF_SEQ}, cache_qry={'qry1': qry_seq}),
         region_qry=SimpleNamespace(chrom='qry1', pos=0, end=len(qry_seq)),
+        region_qry_seq=None,
         region_ref_qrytrim=SimpleNamespace(chrom='chr1', pos=dup_pos, end=dup_end),
         interval=SimpleNamespace(len_ref=len_ref),
     )

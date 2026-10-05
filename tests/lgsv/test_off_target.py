@@ -74,7 +74,7 @@ def _interval(len_ins: int, len_del: int) -> SimpleNamespace:
         seg_len_or_dup=[], seg_len=[len_ins] if len_ins else [],
         len_outer_dup=0, len_outer_del=len_del, len_qry=len_ins, len_ref=len_del,
         region_ref=region_ref, region_qry=region_qry,
-        region_ref_qryref=region_ref, region_qry_qryref=region_qry,
+        region_ref_qryref=region_ref, region_qry_qryref=region_qry, qryref_spans_outer_dup=True,
         qry_aligned_pass_prop=1.0,
     )
 

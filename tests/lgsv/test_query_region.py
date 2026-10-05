@@ -76,7 +76,7 @@ def _interval(len_ins: int, len_del: int) -> SimpleNamespace:
         seg_len_or_dup=[], seg_len=[len_ins] if len_ins else [],
         len_outer_dup=0, len_outer_del=len_del, len_qry=len_ins, len_ref=len_del,
         region_ref=region_ref, region_qry=region_qry,
-        region_ref_qryref=region_ref, region_qry_qryref=region_qry,
+        region_ref_qryref=region_ref, region_qry_qryref=region_qry, qryref_spans_outer_dup=True,
         qry_aligned_pass_prop=1.0,
     )
 
@@ -108,7 +108,7 @@ def test_deletion_homology_uses_the_region_between_the_anchors(caller_resources)
     interval = _interval(0, 6494)
     variant = DeletionVariant(interval, caller_resources, SimpleNamespace())
 
-    assert variant.region_qry_hom == interval.region_qry
+    assert variant.region_qry_seq == interval.region_qry
 
     hom = perfect_homology(
         seq_var=variant.seq,
@@ -133,7 +133,7 @@ def test_homology_region_defaults_to_the_query_region(caller_resources):
         is_rev=False,
     )
 
-    assert variant.region_qry_hom is None
+    assert variant.region_qry_seq is None
     assert variant.hom_qry == {'up': hom[0], 'dn': hom[1]}
 
 
@@ -173,8 +173,97 @@ def _interval_cpx(len_qry: int, len_dup: int) -> SimpleNamespace:
         region_qry=Region('q1', 2000, 2000 + len_qry),
         region_ref_qryref=Region('chr1', 2400 - len_dup, 2400),
         region_qry_qryref=Region('q1', 2000 - len_dup, 2000 + len_qry),
+        qryref_spans_outer_dup=True,
         qry_aligned_pass_prop=1.0,
     )
+
+
+#
+# Tandem duplications reference trimming did not resolve
+#
+
+def _interval_td(len_dup: int, len_ins: int = 0, resolved: bool = True) -> SimpleNamespace:
+    """Build a tandem-duplication interval.
+
+    :param len_dup: Reference bases covered by both anchors (outer duplication).
+    :param len_ins: Query bases between the anchors beyond the duplication.
+    :param resolved: Whether reference trimming removed the overlap between the anchors, exposing the duplicated
+        bases in the query region between them.
+    """
+    df_segment = pl.DataFrame({
+        'is_anchor': [True, True],
+        'filter': [[], []],
+        'chrom': ['chr1'] * 2,
+        'pos': [1000, 2400 - len_dup],
+        'end': [2400, 3800],
+        'is_aligned': [True] * 2,
+        'is_rev': [False] * 2,
+        'qry_id': ['q1'] * 2,
+        'qry_pos': [0, 2000 + len_ins],
+        'qry_end': [2000, 3400 + len_ins],
+        'align_index': [0, 1],
+    }, schema_overrides={'filter': pl.List(pl.String)})
+
+    region_ref = Region('chr1', 2400 - len_dup, 2400)
+    region_qry = Region('q1', 2000, 2000 + len_ins)
+
+    return SimpleNamespace(
+        start_index=0, end_index=1, df_segment=df_segment, is_rev=False, chrom='chr1',
+        seg_len_aligned=[], seg_len_unaligned=[len_ins] if len_ins else [],
+        seg_len_or_dup=[len_dup], seg_len=[len_ins] if len_ins else [],
+        len_outer_dup=len_dup, len_outer_del=0, len_qry=len_ins, len_ref=-len_dup,
+        region_ref=region_ref, region_qry=region_qry, region_ref_qryref=region_ref,
+        region_qry_qryref=(
+            Region('q1', 2000 - len_dup, 2000 + len_ins) if resolved else region_qry
+        ),
+        qryref_spans_outer_dup=resolved,
+        qry_aligned_pass_prop=1.0,
+    )
+
+
+@pytest.mark.parametrize('resolved', [True, False])
+def test_tandem_duplication_sequence_is_complete(caller_resources, resolved):
+    """A tandem duplication carries its full sequence whether or not trimming exposed the duplicated bases."""
+    variant = InsertionVariant(_interval_td(len_dup=1400, resolved=resolved), caller_resources, SimpleNamespace())
+
+    assert variant.varsubtype == 'TD'
+    assert variant.varlen == 1400
+    assert len(variant.seq) == variant.varlen
+
+
+def test_unresolved_tandem_duplication_reports_a_one_base_query_region(caller_resources):
+    """A duplication whose bases appear in no query region reports 1 bp rather than an empty range."""
+    variant = InsertionVariant(_interval_td(len_dup=1400, resolved=False), caller_resources, SimpleNamespace())
+
+    assert variant.qry_end - variant.qry_pos == 1
+    assert variant.region_qry_seq.pos == variant.region_qry_seq.end
+
+
+def test_unresolved_tandem_duplication_takes_bases_from_the_reference(caller_resources):
+    """The duplicated bases come from the reference when no query region covers them."""
+    interval = _interval_td(len_dup=1400, resolved=False)
+    variant = InsertionVariant(interval, caller_resources, SimpleNamespace())
+
+    assert variant.seq == REF_SEQ[interval.region_ref.pos:interval.region_ref.end]
+
+
+def test_resolved_tandem_duplication_takes_bases_from_the_query(caller_resources):
+    """The duplicated bases come from the query when reference trimming exposed them."""
+    interval = _interval_td(len_dup=1400, resolved=True)
+    variant = InsertionVariant(interval, caller_resources, SimpleNamespace())
+
+    assert variant.region_qry == interval.region_qry_qryref
+    assert variant.seq == QRY_SEQ[interval.region_qry_qryref.pos:interval.region_qry_qryref.end]
+
+
+def test_unresolved_tandem_duplication_with_inserted_bases(caller_resources):
+    """Bases inserted alongside an unresolved duplication are kept with it."""
+    variant = InsertionVariant(_interval_td(len_dup=1400, len_ins=60, resolved=False), caller_resources,
+                               SimpleNamespace())
+
+    assert variant.varlen == 1460
+    assert len(variant.seq) == variant.varlen
+    assert variant.qry_end - variant.qry_pos == 60
 
 
 def test_complex_takes_the_query_region_from_trimmed_alignments(caller_resources):
