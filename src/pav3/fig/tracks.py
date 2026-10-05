@@ -40,6 +40,12 @@ MG_STAT_FIELDS: tuple[str, ...] = tuple(
 CONTROL_CHAR_PATTERN = r'[\x00-\x1f\x7f]'
 """Control characters (including tab, newline, and carriage return) stripped from BED track fields."""
 
+NUMERIC_AS_TYPES: frozenset[str] = frozenset({'int', 'uint', 'short', 'ushort', 'byte', 'ubyte', 'float'})
+"""AutoSQL types that must be backed by a numeric column (array suffixes stripped before matching)."""
+
+ITEM_RGB_FIELDS: frozenset[str] = frozenset({'color'})
+"""Fields exempt from the numeric check: UCSC itemRgb fields are declared "uint" but hold "R,G,B" strings."""
+
 ALIGN_TRACK_TABLE_FILENAME = 'alignment_track_fields.tsv'
 
 VAR_TRACK_TABLE_FILENAME = 'variant_track_fields.tsv'
@@ -415,8 +421,8 @@ def call_hap_invdupcpx(
         )
         .with_columns(
             (pl.col('filter').list.len() == 0).alias('_is_pass'),
-            pl.col('pos_thick').fill_null('pos'),
-            pl.col('end_thick').fill_null('end'),
+            pl.col('pos_thick').fill_null(pl.col('pos')),
+            pl.col('end_thick').fill_null(pl.col('end')),
         )
         .join(color_table, on=['vartype', '_is_pass'], how='left')
     )
@@ -693,6 +699,11 @@ def set_default_as_types(
     filled with an appropriate default value for the type ("." for string/char, 0 for integer,
     and 0.0 for float types).
 
+    Columns typed as numbers in the AutoSQL table must hold numeric values, which is checked before
+    the cast to string. A column name passed as a string literal to a Polars expression promotes the
+    whole column to strings and reaches "bedToBigBed" as a field it cannot parse. UCSC itemRgb fields
+    (`ITEM_RGB_FIELDS`) are exempt: they are declared "uint" but hold "R,G,B" strings.
+
     Control characters are stripped from string-typed columns. A tab or newline reaching a BED
     field breaks "bedToBigBed -tab", which splits records on raw tabs and newlines and knows
     nothing about the CSV quoting Polars applies when writing such a value. An embedded newline
@@ -731,6 +742,8 @@ def set_default_as_types(
         except ValueError:
             raise ValueError(f'Multiple values for column "{col_name}" in AS table')
 
+        as_base_type = bracket_pattern.sub('', as_type)
+
         default_value = {
             'string': '.',
             'lstring': '.',
@@ -743,16 +756,27 @@ def set_default_as_types(
             'ubyte': '0',
             'float': '0',
         }.get(
-            bracket_pattern.sub('', as_type),
+            as_base_type,
             None
         )
 
         if default_value is None:
             raise ValueError(f'Unsupported column type in AS table: {as_type} (column "{col_name}")')
 
+        if (
+            as_base_type in NUMERIC_AS_TYPES
+            and col_name not in ITEM_RGB_FIELDS
+            and not col_type.is_numeric()
+        ):
+            raise ValueError(
+                f'Column "{col_name}" is typed "{as_type}" in the AS table but holds {col_type} values. A '
+                f'non-numeric value reaching a numeric BED field surfaces as "Trailing characters parsing '
+                f'integer in field N" from "bedToBigBed"'
+            )
+
         col_expr = pl.col(col_name).cast(pl.String)
 
-        if bracket_pattern.sub('', as_type) in {'string', 'lstring', 'char'}:
+        if as_base_type in {'string', 'lstring', 'char'}:
             col_expr = col_expr.str.replace_all(CONTROL_CHAR_PATTERN, ' ')
 
         df = df.with_columns(
@@ -891,20 +915,11 @@ def _var_fields(
         pl.lit(1000).alias('track_score'),
     ]
 
-    if 'is_rev' in col_set:
-        field_list.append(
-            (
-                pl.when(pl.col('is_rev') is True)
-                .then(pl.lit('+'))
-                .when(pl.col('is_rev') is False)
-                .then(pl.lit('-'))
-                .otherwise(pl.lit('.'))
-            ).cast(pl.String).alias('strand'),
-        )
-    else:
-        field_list.append(
-            pl.lit('.').alias('strand')
-        )
+    # Variants have no strand: an INV or a reverse-oriented CPX segment is a property of the call, not an
+    # orientation of the reference feature, so every variant track record is unstranded.
+    field_list.append(
+        pl.lit('.').alias('strand')
+    )
 
     if 'call_source' in col_set:
         field_list.append(
