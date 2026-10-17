@@ -38,6 +38,8 @@ https://common-changelog.org/
 - Tandem and inverted duplications are written as `<DUP:TANDEM>` and `<DUP:INVDUP>` rather than `INFO/SUBTYPE`.
 - Replaced VCF `INFO/HOMREF` and `INFO/HOMQRY` with the reserved `INFO/HOMLEN`, summing upstream and downstream
   homology from reference breakpoints for `DEL` and `DUP` and query breakpoints for `INS` and `CPX`.
+- Variant tracks report `.` for strand. The strand column was never set, and a variant carries no orientation of
+  the reference feature it is drawn on.
 
 ### Added
 - VCF `INFO/SVCLAIM` is written as `J` for symbolic `DEL` and `DUP` alleles, which VCF requires. PAV calls these
@@ -69,11 +71,23 @@ https://common-changelog.org/
   measured over the query region between the anchors.
 - Complex variants reported the query region between the untrimmed anchors, which excludes bases duplicated at
   the variant site, leaving `INFO/QUERY` shorter than `INFO/SVLEN`. They now report the region from the
-  query-reference-trimmed alignments, as insertions do, and take their length from it.
+  query-reference-trimmed alignments, as insertions do, when that region spans the duplicated bases.
+- Insertions and complex variants took the duplicated bases at the variant site from the query region of the
+  query-reference-trimmed alignments without checking that reference trimming resolved the overlap between the
+  anchors. Where it did not, a tandem duplication was written with no sequence at all. The duplicated bases are
+  again read from the reference in that case, and the variant reports a 1 bp query region rather than an empty
+  one.
 - Perfect homology was reported as zero when it ran to the end of the compared flank, understating `INFO/HOMLEN`
   for short variants in low-complexity sequence.
 - The assertion comparing the query-trimmed and query-reference-trimmed reference regions of an alignment
   interval joined its conditions with `or`, so it passed whenever any one of them held.
+- INV/DUP/CPX tracks failed to build with `Trailing characters parsing integer in field 7` once the duplication
+  callset carried duplications derived from insertions. Duplications are the only records without their own
+  thick-line coordinates, and the missing values were filled with the literal text `pos` and `end` instead of the
+  variant position, which `bedToBigBed` rejected.
+- Track columns typed as numbers in the AutoSQL table are now checked before the BED is written, naming the
+  column rather than failing inside `bedToBigBed`. UCSC itemRgb columns, which are declared `uint` but hold
+  `R,G,B` strings, are exempt.
 
 ## 3.0.0.dev26 - 2026-08-28
 

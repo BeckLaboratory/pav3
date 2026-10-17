@@ -3,7 +3,7 @@
 import importlib
 import logging
 
-__version__ = '3.0.0.dev26'
+__version__ = '3.0.0.dev27'
 
 __all__ = [
     'align',
