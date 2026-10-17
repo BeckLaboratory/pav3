@@ -115,3 +115,38 @@ def test_svclaim_omitted_for_other_symbolic_types(vartype):
 def test_svclaim_omitted_for_sequence_resolved(vartype):
     """A sequence-resolved REF and ALT pair leaves nothing to disambiguate."""
     assert 'SVCLAIM' not in _info_for(vartype, is_sym=False)
+
+
+def _info_list(**cols) -> list[str | None]:
+    """Get the INFO list for one sequence-resolved deletion with extra columns."""
+    df = pl.LazyFrame({
+        'chrom': ['chr1'], 'vartype': ['DEL'], 'varsubtype': [None],
+        'pos': [10], 'end': [20], 'varlen': [10], 'seq': ['acgt'], '_is_sym_alt': [False],
+        **{col: [val] for col, val in cols.items()},
+    }, schema_overrides={
+        'varlen': pl.Int64, 'varsubtype': pl.String, 'qry_pos': pl.Int64, 'qry_end': pl.Int64,
+        'hom_ref': pl.Struct({'up': pl.Int32, 'dn': pl.Int32}), 'hom_qry': pl.Struct({'up': pl.Int32, 'dn': pl.Int32}),
+    })
+
+    return standard_info_fields(df).collect()['_vcf_info'].to_list()[0]
+
+
+def test_query_written_with_query_coordinates():
+    """QUERY is the 1-based query region."""
+    assert 'QUERY=q1:6-15' in _info_list(qry_id='q1', qry_pos=5, qry_end=15)
+
+
+def test_query_omitted_without_query_coordinates():
+    """Variants derived from complex events have no query region and write no QUERY (previously a null field)."""
+    info = _info_list(qry_id='q1', qry_pos=None, qry_end=None)
+
+    assert None not in info
+    assert not any(field.startswith('QUERY=') for field in info)
+
+
+def test_null_info_field_dropped():
+    """A field built from a missing value is left out rather than written as a null field."""
+    info = _info_list(hom_ref={'up': 3, 'dn': None}, hom_qry={'up': 0, 'dn': 0})
+
+    assert None not in info
+    assert not any(field.startswith('HOMLEN=') for field in info)

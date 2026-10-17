@@ -10,6 +10,7 @@ __all__ = [
     'InversionVariant',
     'ComplexVariant',
     'NullVariant',
+    'seq_ref_region',
     'PatchVariant',
     'DevVariant'
 ]
@@ -1064,6 +1065,42 @@ class InversionVariant(Variant):
         return {'outer_ref', 'outer_qry', 'align_gap'}
 
 
+def seq_ref_region(
+        interval: AnchoredInterval,
+        qry_spans_outer_dup: bool,
+) -> tuple[int, int]:
+    """Get the reference region a complex variant's sequence replaces.
+
+    Replacing reference bases [pos, end) with the variant sequence ("seq") reconstructs the haplotype across the
+    variant, which is how a sequence-resolved VCF record describes it. The region depends on how the anchors meet:
+
+    * Anchors do not overlap on the reference (`len_ref` >= 0): The reference between the anchors, which is empty at an
+      insertion site.
+    * Anchors overlap and the query region comes from the query-reference-trimmed alignments
+      (`qry_spans_outer_dup`): The query bases between the trimmed anchors include the duplicated bases and replace
+      the reference between the trimmed anchors (usually empty, an insertion where they meet).
+    * Anchors overlap and the duplicated bases are taken from the reference: The sequence is the query between the
+      anchors followed by the reference over the duplicated region, which is inserted at the end of the left anchor
+      (reference orientation).
+
+    :param interval: Anchored interval of the variant.
+    :param qry_spans_outer_dup: True if the variant's query region comes from the query-reference-trimmed alignments
+        and spans the duplicated bases.
+
+    :returns: Tuple of reference start and end positions (0-based, half-open).
+    """
+    if interval.len_ref >= 0:
+        return interval.region_ref.pos, interval.region_ref.pos + interval.len_ref
+
+    if qry_spans_outer_dup:
+        return (
+            interval.region_ref_qryref.pos,
+            interval.region_ref_qryref.pos + max(interval.len_ref_qryref, 0)
+        )
+
+    return interval.region_ref.end, interval.region_ref.end
+
+
 class ComplexVariant(Variant):
     """Complex variant call."""
 
@@ -1097,6 +1134,9 @@ class ComplexVariant(Variant):
             # Reference trimming left the anchors overlapping, so the duplicated bases appear in no query region and
             # "seq" takes them from the reference.
             self.region_qry = interval.region_qry
+
+        # Reference region "seq" replaces
+        self.seq_ref_pos, self.seq_ref_end = seq_ref_region(interval, self.qry_spans_outer_dup)
 
         self.varlen = interval.len_qry + len_dup
 
@@ -1166,7 +1206,7 @@ class ComplexVariant(Variant):
     @classmethod
     def _row_set(cls) -> set[str]:
         """Get a set of row names for this variant call."""
-        return {'varsubtype', 'seg_n', 'trace_qry', 'trace_ref', 'seg', 'dup'}
+        return {'varsubtype', 'seg_n', 'trace_qry', 'trace_ref', 'seg', 'dup', 'seq_ref_pos', 'seq_ref_end'}
 
 
 class NullVariant(Variant):

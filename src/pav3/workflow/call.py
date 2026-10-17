@@ -408,12 +408,61 @@ def _mg_src_sample_hap_expr() -> pl.Expr:
     )
 
 
+def get_merge_params(
+        vartype: str,
+        merge_params_override: Optional[dict[str, Any]] = None,
+) -> list[dict[str, Any]]:
+    """Get haplotype merge parameters for a variant type.
+
+    :param vartype: Variant type ("insdel", "snv", "inv", "cpx", "dup"; "ins" and "del" are aliases for "insdel").
+    :param merge_params_override: Parameters overriding `pav3.const.DEFAULT_MERGE_PARAMS` keyed by variant type
+        (config parameter "merge_params"). Each value is a list of pairwise overlap stages or a single stage. Variant
+        types missing from this dictionary keep the defaults.
+
+    :returns: A list of pairwise overlap stage definitions.
+
+    :raises ValueError: If `vartype` or a key in `merge_params_override` is not a known variant type, or if a value is
+        not a stage or a list of stages.
+    """
+    if vartype is not None and (vartype := vartype.lower().strip()) in {'ins', 'del'}:
+        vartype = 'insdel'
+
+    if vartype not in const.DEFAULT_MERGE_PARAMS:
+        raise ValueError(f'Unknown variant type for merge parameters: "{vartype}"')
+
+    if merge_params_override is not None:
+        unknown_keys = set(merge_params_override.keys()) - set(const.DEFAULT_MERGE_PARAMS.keys())
+
+        if unknown_keys:
+            raise ValueError(
+                f'Unknown variant type(s) in merge parameters: {", ".join(sorted(unknown_keys))} '
+                f'(expected {", ".join(const.DEFAULT_MERGE_PARAMS.keys())})'
+            )
+
+        if vartype in merge_params_override:
+            stage_list = merge_params_override[vartype]
+
+            if isinstance(stage_list, dict):
+                stage_list = [stage_list]
+
+            if not isinstance(stage_list, list) or not stage_list or not all(
+                isinstance(stage, dict) for stage in stage_list
+            ):
+                raise ValueError(
+                    f'Merge parameters for "{vartype}" must be a stage (object) or a non-empty list of stages'
+                )
+
+            return [dict(stage) for stage in stage_list]
+
+    return [dict(stage) for stage in const.DEFAULT_MERGE_PARAMS[vartype]]
+
+
 def merge_haplotypes(
         vartype: str,
         callsets: Iterable[agglovar.merge.base.CallsetDefInputType],
         ref_path: str | Path,
         out_path: str | Path,
-        merge_params: Optional[str | Iterable[dict[str, Any]]] = None,
+        merge_params: Optional[Iterable[dict[str, Any]]] = None,
         merge_name: Optional[str] = None,
         temp_file_container: Optional[TempDirContainer] = None,
 ) -> None:
@@ -440,9 +489,7 @@ def merge_haplotypes(
         raise ValueError(f'Unknown variant type "{vartype}" (expected one of {", ".join(known_vartype)})')
 
     if merge_params is None:
-        merge_params = const.DEFAULT_MERGE_PARAMS[
-            vartype if vartype not in {'ins', 'del'} else 'insdel'
-        ]
+        merge_params = get_merge_params(vartype)
     else:
         merge_params = list(merge_params)
 
@@ -513,12 +560,20 @@ def merge_haplotypes(
                     '%sMerging chromosome %s (vartype=%s, pass=%s): ' % (log_prefix, chrom, vartype, filter_pass)
                 )
 
+                # Remove duplicate calls within a haplotype. The key includes the variant type and sequence so
+                # that distinct alleles at the same site (e.g. a 1 bp INS and DEL at one position, or two INS of the
+                # same length with different sequences) are not dropped.
+                if vartype == 'SNV':
+                    dedup_cols = ['chrom', 'pos', 'alt']
+                elif vartype in {'INS', 'DEL', 'CPX'}:
+                    dedup_cols = ['chrom', 'pos', 'end', 'varlen', 'vartype', 'seq']
+                else:
+                    dedup_cols = ['chrom', 'pos', 'end', 'varlen', 'vartype']
+
                 pre_filter = [
                     pl.col('chrom') == chrom,
                     pl.col('vartype').str.to_uppercase() == vartype,
-                    pl.concat_list(
-                        *(['chrom', 'pos', 'end', 'varlen'] if vartype != 'SNV' else ['chrom', 'pos', 'alt'])
-                    ).is_first_distinct(),
+                    pl.struct(dedup_cols).is_first_distinct(),
                     (
                         pl.col('filter').list.len() == 0
                         if filter_pass else

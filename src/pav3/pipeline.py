@@ -19,12 +19,14 @@ __all__ = [
     'link_fasta',
     'get_rules_path',
     'get_pav_config_path',
+    'read_pav_config',
     'get_pav_asm_table_path',
     'get_pav_env_path',
 ]
 
 import importlib.resources
 import itertools
+import json
 import logging
 import os
 from pathlib import Path
@@ -35,6 +37,7 @@ import pysam
 import Bio.SeqIO
 import Bio.bgzf
 import polars as pl
+import yaml
 
 import agglovar
 
@@ -1017,6 +1020,9 @@ def get_pav_config_path(
 ) -> Path:
     """Locate the PAV configuration filename.
 
+    The default configuration is "pav.yaml" (or "pav.yml"). If no YAML configuration is found, "pav.json" is used. If
+    both are present, a warning is printed and the YAML configuration is used.
+
     :param config_filename: Path to the config file. If None, the default config file is used.
     :param root_path: Root path to search for the config file. If None, the current directory
         is used.
@@ -1032,6 +1038,8 @@ def get_pav_config_path(
         root_path = Path(root_path)
 
     default_paths = (
+        root_path / 'pav.yaml',
+        root_path / 'pav.yml',
         root_path / 'pav.json',
         root_path / 'pav.json.txt',
     )
@@ -1062,7 +1070,7 @@ def get_pav_config_path(
 
             if not found_paths:
                 print(
-                    f'\nWARNING: Using deprecated config "{config_path}", rename to "pav.json".\n'
+                    f'\nWARNING: Using deprecated config "{config_path}", rename to "pav.yaml" or "pav.json".\n'
                     f'A future PAV version will ignore "config.json"\n'
                 )
 
@@ -1073,7 +1081,9 @@ def get_pav_config_path(
             found_paths.append(config_path)
 
     if not found_paths:
-        raise FileNotFoundError('No config file found (expected "pav.json" or deprecated "config.json")')
+        raise FileNotFoundError(
+            'No config file found (expected "pav.yaml", "pav.json", or deprecated "config.json")'
+        )
 
     if len(found_paths) - deprecated_count > 1:
         file_names = ', '.join(f'"{p}"' for p in found_paths[1:])
@@ -1083,6 +1093,42 @@ def get_pav_config_path(
         )
 
     return found_paths[0]
+
+
+def read_pav_config(
+        config_path: str | Path,
+) -> dict[str, Any]:
+    """Read a PAV configuration file.
+
+    Files ending in ".yaml" or ".yml" are parsed as YAML, and all others are parsed as JSON. Both formats accept the
+    same parameters.
+
+    :param config_path: Path to the config file.
+
+    :return: Configuration dictionary.
+
+    :raises ValueError: If the file cannot be parsed or does not contain a key-value mapping.
+    """
+    config_path = Path(config_path)
+
+    with open(config_path, encoding='utf-8') as config_file:
+        if config_path.suffix.lower() in {'.yaml', '.yml'}:
+            try:
+                config = yaml.safe_load(config_file)
+            except yaml.YAMLError as e:
+                raise ValueError(f'Failed parsing YAML config file "{config_path}": {e}') from e
+        else:
+            try:
+                config = json.load(config_file)
+            except json.JSONDecodeError as e:
+                raise ValueError(f'Failed parsing JSON config file "{config_path}": {e}') from e
+
+    if not isinstance(config, dict):
+        raise ValueError(
+            f'Config file "{config_path}" must contain a key-value mapping: Found {type(config).__name__}'
+        )
+
+    return config
 
 
 def get_pav_asm_table_path(

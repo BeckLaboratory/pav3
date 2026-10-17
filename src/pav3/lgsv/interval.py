@@ -96,6 +96,8 @@ class AnchoredInterval:
         query region from the query-reference-trimmed alignments must add the duplicated bases separately when
         this is False.
     :ivar len_ref: Distance between the anchors on the reference. May be a negative number (i.e. Tandem Duplications).
+    :ivar len_ref_qryref: Distance between the anchors on the reference in query-reference-trimmed alignments. May be
+        negative if reference trimming did not resolve the overlap between the anchors.
     :ivar len_qry: Distance between the anchors on the query.
     :ivar score_gap_sum_aligned: Gap sum score for aligned segments.
     :ivar score_gap_sum_unaligned: Gap sum score for unaligned segments.
@@ -112,6 +114,7 @@ class AnchoredInterval:
     region_qry_qryref: Region
     qryref_spans_outer_dup: bool
     len_ref: int
+    len_ref_qryref: int
     len_qry: int
 
     def __init__(
@@ -231,6 +234,8 @@ class AnchoredInterval:
             pos_align_index_qryref = self.df_segment_qryref[0, 'align_index']
             ref_end_qryref = self.df_segment_qryref[-1, 'pos']
             end_align_index_qryref = self.df_segment_qryref[-1, 'align_index']
+
+        self.len_ref_qryref = ref_end_qryref - ref_pos_qryref
 
         if ref_pos_qryref > ref_end_qryref:
             ref_pos_qryref, ref_end_qryref = ref_end_qryref, ref_pos_qryref

@@ -25,6 +25,25 @@ https://common-changelog.org/
 ## 3.0.0.dev27
 
 ### Changed
+- Low-confidence alignment filtering (`LCALIGN`) is off by default (config parameter `lc_model` defaults to
+  `none`). It removed correct calls in highly diverged regions such as HLA class II. Set `lc_model` to `default` for
+  the previous behavior.
+- Alignment records with MAPQ below 20 are filtered by default (new config parameter `min_mapq`). Their variants
+  are filtered with `MAPQ`, and their regions are not callable. Low-MAPQ fragments in satellites and repeats
+  produced false calls that broke haplotype reconstruction from the VCF.
+- Haplotype merge defaults (`pav3.const.DEFAULT_MERGE_PARAMS`) for `insdel` and `cpx` merge only matching alleles:
+  same position and end, size and sequence identity of at least 0.998 for insertions and deletions, and 0.98 for
+  complex variants (with segment overlap 0.8). The previous population-style tolerances merged different alleles
+  from the two haplotypes into one homozygous record and moved variants up to 200 bp to the other haplotype's
+  position. Override with the new `merge_params` config parameter.
+- VCF records at the same position are combined into multi-allelic records when they have the same filter and no
+  haplotype carries more than one of them, so different alleles on two haplotypes are written as one record (e.g.
+  `1|2`) instead of two overlapping records (`1|0` and `0|1`).
+- Complex variants are written as sequence-resolved REF and ALT alleles by default. The record replaces the
+  reference bases skipped by the variant with the variant sequence, so applying it to the reference (e.g.
+  `bcftools consensus`) reconstructs the haplotype. Set `vcf_cpx_symbolic` to write `<CPX>` alleles.
+- Complex variant tables have new columns `seq_ref_pos` and `seq_ref_end`, the reference region the variant
+  sequence replaces.
 - Tighter compliance with VCF 4.5.
 - VCF INFO headers declare an accurate `Number`. `END` is `Number=1` and `SVLEN` is `Number=A`, matching the
   reserved keys; all others are `Number=A`. All were previously `Number=.`.
@@ -42,6 +61,9 @@ https://common-changelog.org/
   the reference feature it is drawn on.
 
 ### Added
+- YAML configuration file `pav.yaml` (or `pav.yml`), accepting the same parameters as `pav.json`. PAV reads
+  `pav.json` only if no YAML configuration is found, and warns and uses the YAML configuration if both are present.
+- Config parameters `min_mapq`, `merge_params`, and `vcf_cpx_symbolic`.
 - VCF `INFO/SVCLAIM` is written as `J` for symbolic `DEL` and `DUP` alleles, which VCF requires. PAV calls these
   from non-reference adjacencies rather than from a measure of DNA abundance.
 - Duplications derived from insertions placing a copy of a reference region. A tandem-duplication insertion
@@ -50,13 +72,31 @@ https://common-changelog.org/
   larger one alone. The smaller component was previously discarded, leaving an allele that reported no inserted
   sequence.
 - Documentation page describing the VCF output.
+- Config parameter `perf_log` logs the CPU and memory usage of each rule from input assemblies to the VCF to
+  `log/perf/{asm_name}/{rule}_{wildcards}.parquet` (e.g. `log/perf/HG00171/call_intra_snv_insdel_h1.parquet`).
+  `true` takes a snapshot every 30 seconds, a positive integer sets the seconds between snapshots, and `false` or `0`
+  (default) disables it. The table is rewritten after every snapshot, so a job killed for exceeding its memory keeps
+  its samples. Adjunct rules (tracks, alignment depth) are not logged.
 
 ### Removed
+- Snakemake `benchmark` directives (`log/benchmark/`), replaced by `perf_log`.
 - VCF `INFO/SVTYPE`. VCF 4.5 deprecates it as redundant with ALT, which carries the type in the symbolic allele
   or in the REF and ALT lengths.
 - The `##FILTER=<ID=PASS>` header. VCF defines PASS implicitly.
 
 ### Fixed
+- Alignment trimming truncated the passing alignment instead of the filtered one where a passing and a filtered
+  alignment overlapped (the filtered flag was inverted).
+- Alignment trimming applied the left-aligning tie-break to alignments in opposite orientations instead of
+  alignments in the same orientation.
+- Alignment trimming removed a passing alignment contained in a higher-scoring filtered alignment. The filtered
+  alignment is now removed.
+- The haplotype merge dropped one of two variants with the same position, end, and length on one haplotype (e.g. a
+  1 bp insertion and deletion at one site). Duplicates are now identified with the variant type and sequence.
+- Symbolic VCF records (INV, DUP) had the first base of the variant as `REF` instead of the base at `POS`.
+- VCF FORMAT keys and sample values were separated by `;` instead of `:`.
+- An unknown `lc_model` name is an error instead of silently disabling LC filtering (path-like names) or raising an
+  unrelated import error (plain names).
 - Variant IDs were duplicated when a variant merged into both the passing and non-passing haplotype merges. IDs
   are now versioned across both merges rather than within each.
 - Deletions derived from complex variants were written with an empty VCF `REF`.

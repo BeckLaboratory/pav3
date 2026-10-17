@@ -135,7 +135,7 @@ def _add_subparser_batch(
     parser_batch.add_argument(
         '--config',
         type=str,
-        help='Specify a JSON configuration file used by all samples. Must include "reference".',
+        help='Specify a YAML or JSON configuration file used by all samples. Must include "reference".',
     )
 
     parser_batch.add_argument(

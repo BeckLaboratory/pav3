@@ -97,6 +97,8 @@ VARIANT: dict[str, PolarsDataType] = {
     'derived': pl.String,
     'discord': pl.List(pl.String),
     'inner': pl.List(pl.String),
+    'seq_ref_pos': pl.Int64,
+    'seq_ref_end': pl.Int64,
     'seq': agglovar.schema.VARIANT['seq'],
     'mg_src': pl.List(
         pl.Struct({
@@ -189,6 +191,11 @@ Fields:
     * inner: IDs of a variant this variant was inside of. These are typically small variants inside aligned segments
         that are part of a larger variant (i.e. duplicated region of an insertion or complex event). If not empty, then
         "INNER" must also be present in "filter".
+    * seq_ref_pos: Complex variants only. Start of the reference region "seq" replaces (see seq_ref_end).
+    * seq_ref_end: Complex variants only. End of the reference region "seq" replaces. Replacing reference bases
+        [seq_ref_pos, seq_ref_end) with "seq" reconstructs the haplotype across the variant. The region is empty
+        (seq_ref_pos == seq_ref_end) when nothing is deleted. It differs from [pos, end) when the anchoring alignments
+        overlap on the reference (duplication at the outer breakpoint), where [pos, end) is the overlap.
     * seq: Variant sequence in reference orientation. Null if not defined (never "*" or other placeholders).
 
 Merge fields:

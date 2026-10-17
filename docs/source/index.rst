@@ -4,8 +4,8 @@ PAV documentation
 The Phased Assembly Variant (PAV) caller generates variant calls from genome assemblies.
 
 PAV 3 is a reimplementation of earlier PAV versions. It uses many of the same algorithms and
-includes new features for identifying large and complex structural variants. Improved
-low-confidence alignment prediction helps to filter variant calls from erroneous alignment records.
+includes new features for identifying large and complex structural variants. Optional
+low-confidence alignment prediction can filter variant calls from erroneous alignment records.
 
 PAV 3 is fast. By utilizing modern data science tools, specifically Polars, PAV produces callsets
 using a fraction of the memory and CPU resources as earlier versions.
@@ -44,7 +44,7 @@ See the :doc:`command-line interface <cli>` for all subcommands and options.
 Configuration
 -------------
 
-``pav3 batch`` reads a configuration file (``pav.json``) and a table of assemblies
+``pav3 batch`` reads a configuration file (``pav.yaml`` or ``pav.json``) and a table of assemblies
 (``assemblies.tsv``). For details about setting these up, along with guidance on choosing a
 reference and a description of the output, see the
 `README <https://github.com/BeckLaboratory/pav3/blob/main/README.md>`_ in the PAV repository.

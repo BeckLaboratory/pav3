@@ -77,21 +77,30 @@ All tables are in parquet format.
 
 To run assemblies in batches ("pav3 batch" command), PAV reads two configuration files:
 
-* `pav.json`: Points to the reference genome and can be used to set optional parameters.
+* `pav.yaml`: Points to the reference genome and can be used to set optional parameters.
 * `assemblies.tsv`: A table of input assemblies.
 
-### Base config: pav.json
+### Base config: pav.yaml
 
-A JSON configuration file, `pav.json`, configures PAV. Default options are built-in, and the only required option is
+A YAML configuration file, `pav.yaml`, configures PAV. Default options are built-in, and the only required option is
 `reference` pointing to a reference FASTA file.
 
 Example:
+
+```
+reference: /path/to/hg38.no_alt.fa.gz
+```
+
+PAV also accepts a JSON configuration file, `pav.json`, with the same parameters:
 
 ```
 {
   "reference": "/path/to/hg38.no_alt.fa.gz"
 }
 ```
+
+PAV reads `pav.json` only if `pav.yaml` (or `pav.yml`) is not found. If both are present, PAV prints a warning and uses
+`pav.yaml`.
 
 ### Assembly table
 
@@ -127,7 +136,8 @@ path is empty. For example, if some assemblies have an "unphased" haplotype and 
 Note that genotypes in the VCF file will have one allele for each haplotype defined for the assembly. For an assembly
 with haplotypes "h1", "h2", and "unphased", three genotype alleles will be possible (e.g. "1|0|." for a heterozygous
 variant present in "h1", not present in "h2", and uncallable in "unphased"). The order of genotypes is determined by
-the order of haplotype columns in the assembly table.
+the order of haplotype columns in the assembly table. When haplotypes carry different alleles at the same position, they
+are written as one multi-allelic record (e.g. "1|2").
 
 Each "hap_" column contains paths to input files in FASTA, FASTQ, GFA, or FOFN format. FOFN may contain paths to these
 same file types including other FOFNs (recursive FOFNs are not recommended, but PAV will detect cycles). Multiple files
@@ -142,7 +152,7 @@ file from the input, index it, and use it for variant calling.
 #### Configuration column for global overrides
 
 An optional "config" column can override global configuration parameters per assembly. Global configuration parameters
-are defined in `pav.json` or are PAV default values if not defined. Values in this column are semicolon-separated lists
+are defined in `pav.yaml` (or `pav.json`) or are PAV default values if not defined. Values in this column are semicolon-separated lists
 of key-value pairs (i.e. "key1=val1;key2=val2"). The "reference" parameter cannot be set in the assembly table.
 
 

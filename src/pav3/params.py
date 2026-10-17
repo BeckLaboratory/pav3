@@ -12,9 +12,11 @@ __all__ = [
     'PavParams',
     'format_config_md',
     'get_align_params',
+    'get_perf_log_interval',
 ]
 
 from dataclasses import dataclass
+import json
 import polars as pl
 import sys
 import textwrap
@@ -97,6 +99,15 @@ class PavParams:
                     CONFIG_PARAM_DICT[key].get_value(
                         self._config_override.get(key, self._pav_config.get(key, None))
                     )
+                )
+            )
+
+        elif key == 'perf_log':
+            setattr(
+                self,
+                key,
+                get_perf_log_interval(
+                    self._config_override.get(key, self._pav_config.get(key, None))
                 )
             )
 
@@ -253,7 +264,7 @@ class _ConfigParamElement(object):
 
         object.__setattr__(self, 'val_type', self.val_type.strip().lower())
 
-        if self.val_type not in {'int', 'float', 'bool', 'str'}:
+        if self.val_type not in {'int', 'float', 'bool', 'str', 'json'}:
             raise ValueError(f'Unrecognized parameter type: {self.val_type}')
 
         # Check allowed values
@@ -318,6 +329,17 @@ class _ConfigParamElement(object):
         elif self.val_type == 'str':
             val = str(val)
 
+        elif self.val_type == 'json':
+            # A JSON object, either parsed (config file) or as a JSON string (e.g. the assembly table config column)
+            if isinstance(val, str):
+                try:
+                    val = json.loads(val)
+                except ValueError as e:
+                    raise ValueError(f'Failed parsing {self.name} as JSON: {val}') from e
+
+            if not isinstance(val, dict):
+                raise ValueError(f'Parameter {self.name} must be a JSON object: Received {type(val)}')
+
         else:
             raise ValueError(f'Unrecognized parameter type (PROGRAM BUG) for {self.name}: {self.val_type}')
 
@@ -374,11 +396,17 @@ _CONFIG_PARAM_LIST: list[_ConfigParamElement] = [
                     'Keyword "pav2" reverts to legacy parameters used by PAV versions 1 & 2.'
     ),
     _ConfigParamElement(
-        'lc_model', 'str', default='default',
-        description='Low-confidence (LC) alignment prediction model. May be the name of a model packaged with'
-                    'PAV or a path to a custom model. See "files/lcmodel/LC_MODEL.md for more information." in'
-                    'the PAV distribution for more information',
+        'lc_model', 'str', default='none',
+        description='Low-confidence (LC) alignment prediction model. May be the name of a model packaged with '
+                    'PAV (e.g. "default"), a path to a custom model, or "none" to disable LC filtering. LC '
+                    'filtering is disabled by default because it removes correct calls in highly diverged regions. '
+                    'See "files/lcmodel/LC_MODEL_TRAINING.md" in the PAV distribution for more information.',
         advanced=True
+    ),
+    _ConfigParamElement(
+        'min_mapq', 'int', default=const.DEFAULT_MIN_MAPQ, min=0,
+        description='Minimum MAPQ for an alignment record. Records below this threshold are tagged with the MAPQ '
+                    'filter, so their variants are filtered and their regions are not callable. Set to 0 to disable.'
     ),
     _ConfigParamElement(
         'align_score_model', 'str', DEFAULT_ALIGN_SCORE_MODEL,
@@ -450,6 +478,22 @@ _CONFIG_PARAM_LIST: list[_ConfigParamElement] = [
         'vcf_haplotypes', 'str', None,
         description='A comma-separated list of haplotype names to include in the VCF where genotypes are given in this'
                     'order. If not defined, then all haplotypes are written in the order they are defined.'
+    ),
+    _ConfigParamElement(
+        'vcf_cpx_symbolic', 'bool', False,
+        description='Write complex variants (CPX) as symbolic "<CPX>" ALT alleles. By default, complex variants are '
+                    'written with sequence-resolved REF and ALT alleles, which replace the reference bases skipped '
+                    'by the variant with the variant sequence (e.g. for "bcftools consensus").',
+        advanced=True
+    ),
+    _ConfigParamElement(
+        'merge_params', 'json', None,
+        description='Haplotype merge parameters overriding the defaults (pav3.const.DEFAULT_MERGE_PARAMS). A JSON '
+                    'object keyed by variant type ("insdel", "snv", "inv", "cpx", "dup"), where each value is a list '
+                    'of agglovar pairwise overlap stages (or a single stage object). Variant types not listed keep '
+                    'the defaults. The defaults merge only matching alleles within one sample; looser parameters '
+                    'collapse distinct alleles from different haplotypes into one record.',
+        advanced=True
     ),
 
     # Inversion site flagging from variant call clusters
@@ -573,7 +617,14 @@ _CONFIG_PARAM_LIST: list[_ConfigParamElement] = [
         'debug', 'bool', default=False, advanced=True,
         description='Extra debugging checks. This option may slow down the pipeline significantly and should be used '
                     'for testing only. Do not enable in production.'
-    )
+    ),
+    _ConfigParamElement(
+        'perf_log', 'bool', default=False, is_null=True,
+        description='Log the CPU and memory usage of each rule from input assemblies to the VCF to '
+                    '"log/perf/{asm_name}/{rule}_{wildcards}.parquet". "true" takes a snapshot every '
+                    f'{const.DEFAULT_PERF_LOG_INTERVAL} seconds, a positive integer sets the number of seconds '
+                    'between snapshots, and "false" or 0 disables logging.'
+    ),
 ]
 """List of known configuration parameters, default values, documentation, and validation rules."""
 
@@ -671,3 +722,47 @@ def get_align_params(aligner, align_params):
         return NAMED_ALIGNER_PARAMS[align_params.lower()][aligner]
 
     return align_params
+
+
+def get_perf_log_interval(val: Any) -> int:
+    """Get the number of seconds between resource snapshots from config parameter "perf_log".
+
+    Integers are read before booleans, so "1" is a 1-second interval and not `True`.
+
+    :param val: `True`, `False`, an integer 0 or greater, or a string of one of these. `None` disables logging.
+
+    :returns: Seconds between snapshots, or 0 if performance logging is disabled.
+
+    :raises ValueError: If the value is not a boolean or an integer 0 or greater.
+    """
+    if val is None:
+        return 0
+
+    if isinstance(val, str):
+        val_str = val.strip()
+
+        try:
+            val = int(val_str)
+        except ValueError:
+            val = as_bool(val_str, fail_to_none=True)
+
+            if val is None:
+                raise ValueError(
+                    f'Illegal value for perf_log: "{val_str}" (expected true, false, or an integer number of '
+                    f'seconds 0 or greater)'
+                )
+
+    # bool is a subclass of int, so it is checked first
+    if isinstance(val, bool):
+        return const.DEFAULT_PERF_LOG_INTERVAL if val else 0
+
+    if not isinstance(val, int):
+        raise ValueError(
+            f'Illegal value for perf_log: {val} ({type(val).__name__}, expected true, false, or an integer number of '
+            f'seconds 0 or greater)'
+        )
+
+    if val < 0:
+        raise ValueError(f'Illegal value for perf_log: {val} (seconds between snapshots must be 0 or greater)')
+
+    return val

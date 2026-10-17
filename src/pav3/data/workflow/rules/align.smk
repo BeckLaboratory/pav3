@@ -82,7 +82,6 @@ rule align_depth:
     wildcard_constraints:
         side=r'qry|ref',
         filt=r'retain|drop'
-    benchmark: 'log/benchmark/{asm_name}/align_depth_{side}_{hap}_trim-{trim}_filt-{filt}.tsv'
     threads: POLARS_MAX_THREADS
     run:
         pav3.align.tables.align_depth_table(
@@ -103,112 +102,112 @@ rule align_tables:
         pq_qry='results/{asm_name}/align/{hap}/align_trim-qry.parquet',
         pq_qryref='results/{asm_name}/align/{hap}/align_trim-qryref.parquet',
         align_head='results/{asm_name}/align/{hap}/align_headers.gz'
-    benchmark: 'log/benchmark/{asm_name}/align_tables_{hap}.tsv'
     threads: 1
     run:
+        with pav3.workflow.perf.perf_log(rule, wildcards, PAV_CONFIG, ASM_TABLE):
+            # Get parameters
+            pav_params = pav3.params.PavParams(wildcards.asm_name, PAV_CONFIG, ASM_TABLE)
 
-        # Get parameters
-        pav_params = pav3.params.PavParams(wildcards.asm_name, PAV_CONFIG, ASM_TABLE)
+            qry_fa_filename, qry_fai_filename = pav3.pipeline.expand_fofn(input.qry_fofn)[:2]
+            qry_fa_filename = str(qry_fa_filename)
+            ref_fa_filename = str(pav3.pipeline.expand_fofn(input.ref_fofn)[0])
 
-        qry_fa_filename, qry_fai_filename = pav3.pipeline.expand_fofn(input.qry_fofn)[:2]
-        qry_fa_filename = str(qry_fa_filename)
-        ref_fa_filename = str(pav3.pipeline.expand_fofn(input.ref_fofn)[0])
+            df_qry_fai = agglovar.fa.read_fai(qry_fai_filename, name='qry_id')
 
-        df_qry_fai = agglovar.fa.read_fai(qry_fai_filename, name='qry_id')
+            # Get score and LC models
+            score_model = pav3.align.score.get_score_model(pav_params.align_score_model)
+            lc_model = pav3.align.lcmodel.get_model(pav_params.lc_model)
 
-        # Get score and LC models
-        score_model = pav3.align.score.get_score_model(pav_params.align_score_model)
-        lc_model = pav3.align.lcmodel.get_model(pav_params.lc_model)
-
-        # Trim-none: Read alignments as a BED file.
-        df_none = pav3.align.tables.sam_to_align_table(
-            sam_path=Path(input.sam),
-            df_qry_fai=df_qry_fai,
-            score_model=score_model,
-            lc_model=lc_model,
-            ref_fa_filename=ref_fa_filename,
-        )
-
-        if pav_params.debug:
-            try:
-                pav3.align.records.check_matched_bases(df_none, ref_fa_filename, qry_fa_filename)
-            except Exception as e:
-                raise ValueError(f'Failed to check matched bases before trimming: {e}') from e
-
-        # Apply depth filter
-        if pav_params.align_trim_max_depth > 0:
-            df_none = pav3.align.tables.align_depth_filter(
-                df_none,
-                df_depth=None,
-                max_depth=pav_params.align_trim_max_depth,
-                max_overlap=pav_params.align_trim_max_depth_prop
+            # Trim-none: Read alignments as a BED file.
+            df_none = pav3.align.tables.sam_to_align_table(
+                sam_path=Path(input.sam),
+                df_qry_fai=df_qry_fai,
+                min_mapq=pav_params.min_mapq,
+                score_model=score_model,
+                lc_model=lc_model,
+                ref_fa_filename=ref_fa_filename,
             )
 
-        df_none.write_parquet(output.pq_none)
+            if pav_params.debug:
+                try:
+                    pav3.align.records.check_matched_bases(df_none, ref_fa_filename, qry_fa_filename)
+                except Exception as e:
+                    raise ValueError(f'Failed to check matched bases before trimming: {e}') from e
 
-        # Trim-qry
-        df_qry = pav3.align.trim.trim_alignments_qry(
-            df=df_none,
-            df_qry_fai=df_qry_fai,
-            score_model=score_model,
-        )
+            # Apply depth filter
+            if pav_params.align_trim_max_depth > 0:
+                df_none = pav3.align.tables.align_depth_filter(
+                    df_none,
+                    df_depth=None,
+                    max_depth=pav_params.align_trim_max_depth,
+                    max_overlap=pav_params.align_trim_max_depth_prop
+                )
 
-        try:
-            for row in df_qry.iter_rows(named=True):
-                pav3.align.records.check_record(row, df_qry_fai)
-        except Exception as e:
-            raise ValueError(f'Failed to check alignment records (qry trimmed): {wildcards.asm_name}-{wildcards.hap}: {e}') from e
+            df_none.write_parquet(output.pq_none)
 
-        if pav_params.debug:
+            # Trim-qry
+            df_qry = pav3.align.trim.trim_alignments_qry(
+                df=df_none,
+                df_qry_fai=df_qry_fai,
+                score_model=score_model,
+            )
+
             try:
-                pav3.align.records.check_matched_bases(df_qry, ref_fa_filename, qry_fa_filename)
+                for row in df_qry.iter_rows(named=True):
+                    pav3.align.records.check_record(row, df_qry_fai)
             except Exception as e:
-                raise ValueError(f'Failed to check matched bases post trimming (qry trimmed): {wildcards.asm_name}-{wildcards.hap}: {e}') from e
+                raise ValueError(f'Failed to check alignment records (qry trimmed): {wildcards.asm_name}-{wildcards.hap}: {e}') from e
 
-        df_qry.write_parquet(output.pq_qry)
+            if pav_params.debug:
+                try:
+                    pav3.align.records.check_matched_bases(df_qry, ref_fa_filename, qry_fa_filename)
+                except Exception as e:
+                    raise ValueError(f'Failed to check matched bases post trimming (qry trimmed): {wildcards.asm_name}-{wildcards.hap}: {e}') from e
 
-        # Trim-ref
-        df_qryref = pav3.align.trim.trim_alignments_ref(
-            df=df_qry,
-            df_qry_fai=df_qry_fai,
-            score_model=score_model,
-            on_qry=pav_params.redundant_callset
-        )
+            df_qry.write_parquet(output.pq_qry)
 
-        try:
-            for row in df_qryref.iter_rows(named=True):
-                pav3.align.records.check_record(row, df_qry_fai)
-        except Exception as e:
-            raise ValueError(f'Failed to check alignment records (qry & ref trimmed): {wildcards.asm_name}-{wildcards.hap}: {e}') from e
+            # Trim-ref
+            df_qryref = pav3.align.trim.trim_alignments_ref(
+                df=df_qry,
+                df_qry_fai=df_qry_fai,
+                score_model=score_model,
+                on_qry=pav_params.redundant_callset
+            )
 
-        if pav_params.debug:
             try:
-                pav3.align.records.check_matched_bases(df_qryref, ref_fa_filename, qry_fa_filename)
+                for row in df_qryref.iter_rows(named=True):
+                    pav3.align.records.check_record(row, df_qry_fai)
             except Exception as e:
-                raise ValueError(f'Failed to check matched bases post trimming (qry & ref trimmed): {wildcards.asm_name}-{wildcards.hap}: {e}') from e
+                raise ValueError(f'Failed to check alignment records (qry & ref trimmed): {wildcards.asm_name}-{wildcards.hap}: {e}') from e
 
-        df_qryref.write_parquet(output.pq_qryref)
+            if pav_params.debug:
+                try:
+                    pav3.align.records.check_matched_bases(df_qryref, ref_fa_filename, qry_fa_filename)
+                except Exception as e:
+                    raise ValueError(f'Failed to check matched bases post trimming (qry & ref trimmed): {wildcards.asm_name}-{wildcards.hap}: {e}') from e
 
-        # Write SAM headers
-        with gzip.open(input.sam, 'rt') as in_file:
-            with gzip.open(output.align_head, 'wt') as out_file:
+            df_qryref.write_parquet(output.pq_qryref)
 
-                line = next(in_file)
+            # Write SAM headers
+            with gzip.open(input.sam, 'rt') as in_file:
+                with gzip.open(output.align_head, 'wt') as out_file:
 
-                while True:
+                    line = next(in_file)
 
-                    if not line.strip():
-                        continue
+                    while True:
 
-                    if not line.startswith('@'):
-                        break
+                        if not line.strip():
+                            continue
 
-                    out_file.write(line)
+                        if not line.startswith('@'):
+                            break
 
-                    try:
-                        line = next(in_file)
-                    except StopIteration:
-                        break
+                        out_file.write(line)
+
+                        try:
+                            line = next(in_file)
+                        except StopIteration:
+                            break
 
 
 
@@ -220,46 +219,45 @@ rule align_map:
         align_index=align_index_files
     output:
         sam=temp('temp/{asm_name}/align/trim-none/align_qry_{hap}.sam.gz')
-    benchmark: 'log/benchmark/{asm_name}/align_map_{hap}.tsv'
     threads: 4
     run:
+        with pav3.workflow.perf.perf_log(rule, wildcards, PAV_CONFIG, ASM_TABLE):
+            pav_params = pav3.params.PavParams(wildcards.asm_name, PAV_CONFIG, ASM_TABLE)
 
-        pav_params = pav3.params.PavParams(wildcards.asm_name, PAV_CONFIG, ASM_TABLE)
+            aligner = pav_params.aligner
 
-        aligner = pav_params.aligner
+            ref_fa = str(pav3.pipeline.expand_fofn(input.ref_fofn)[0])
+            qry_fa = str(pav3.pipeline.expand_fofn(input.qry_fofn)[0])
 
-        ref_fa = str(pav3.pipeline.expand_fofn(input.ref_fofn)[0])
-        qry_fa = str(pav3.pipeline.expand_fofn(input.qry_fofn)[0])
+            if os.stat(qry_fa).st_size == 0:
+                raise RuntimeError(f'Query file is empty: {qry_fa}')
 
-        if os.stat(qry_fa).st_size == 0:
-            raise RuntimeError(f'Query file is empty: {qry_fa}')
+            # Get alignment command
+            if aligner == 'minimap2':
+                align_cmd = (
+                    f"""minimap2 """
+                        f"""--secondary=no -a -t {threads} --eqx """
+                        f"""{pav_params.align_params} """
+                        f"""{ref_fa} {qry_fa}"""
+                )
 
-        # Get alignment command
-        if aligner == 'minimap2':
-            align_cmd = (
-                f"""minimap2 """
-                    f"""--secondary=no -a -t {threads} --eqx """
-                    f"""{pav_params.align_params} """
-                    f"""{ref_fa} {qry_fa}"""
-            )
+            else:
+                raise RuntimeError(f'Unknown alignment program (aligner parameter): {wildcards.asm_name}-{wildcards.hap}: {pav_params.aligner}')
 
-        else:
-            raise RuntimeError(f'Unknown alignment program (aligner parameter): {wildcards.asm_name}-{wildcards.hap}: {pav_params.aligner}')
+            # Run alignment
+            if pav_params.verbose:
+                print(f'Aligning {wildcards.asm_name}-{wildcards.hap}: {align_cmd}', flush=True)
 
-        # Run alignment
-        if pav_params.verbose:
-            print(f'Aligning {wildcards.asm_name}-{wildcards.hap}: {align_cmd}', flush=True)
+            with Bio.bgzf.BgzfWriter(output.sam, 'wt') as out_file:
+                for line in shell(align_cmd, iterable=True):
+                    if not line.startswith('@'):
+                        line = line.split('\t')
+                        line[9] = '*'
+                        line[10] = '*'
+                        line = '\t'.join(line)
 
-        with Bio.bgzf.BgzfWriter(output.sam, 'wt') as out_file:
-            for line in shell(align_cmd, iterable=True):
-                if not line.startswith('@'):
-                    line = line.split('\t')
-                    line[9] = '*'
-                    line[10] = '*'
-                    line = '\t'.join(line)
-
-                out_file.write(line)
-                out_file.write('\n')
+                    out_file.write(line)
+                    out_file.write('\n')
 
 
 #

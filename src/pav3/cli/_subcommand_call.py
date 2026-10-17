@@ -144,7 +144,7 @@ def _add_subparser_call(
     parser_call.add_argument(
         '--config',
         type=str,
-        help='Specify a JSON configuration file used by all samples. Must include "reference".',
+        help='Specify a YAML or JSON configuration file used by all samples. Must include "reference".',
     )
 
     parser_call.add_argument(

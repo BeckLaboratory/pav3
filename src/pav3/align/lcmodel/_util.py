@@ -26,8 +26,8 @@ LC_MODEL_RESOURCE = 'pav3.data.lcmodel'
 
 
 def get_model(
-        model_name: Optional[str] = 'default',
-) -> LCAlignModel | None:
+        model_name: Optional[str] = 'none',
+) -> LCAlignModel:
     """Load a model used to tag low-confidence (LC) alignments.
 
     If `model_name` is None, an empty string, or the keywords "none" or "null" (not case-sensitive), a null model is
@@ -45,8 +45,9 @@ def get_model(
     :param model_name: Name of a pre-trained model or path to a model directory on the filesystem. If None or 'none'
         (not case-sensitive), a null model that does not tag any alignment records as low confidence is returned.
 
-    :returns: LC alignment model, or None if no model could be located.
+    :returns: LC alignment model.
 
+    :raises ValueError: If no model could be located for `model_name`.
     :raises ValueError: If the model directory exists but does not contain a model definition file.
     :raises ValueError: If the model definition is invalid or recursive aliases are detected.
     """
@@ -67,7 +68,10 @@ def get_model(
     )
 
     if model_tuple is None:
-        return None
+        raise ValueError(
+            f'LC align model not found: "{model_name}" is not a model packaged with PAV or a path to a model '
+            f'directory (use "none" to disable LC filtering)'
+        )
 
     resource_type, anchor, lc_model_def = model_tuple
 
@@ -196,7 +200,10 @@ def locate_config_package(
 
     model_resource = LC_MODEL_RESOURCE + '.' + model_name
 
-    model_dir = importlib.resources.files(model_resource)
+    try:
+        model_dir = importlib.resources.files(model_resource)
+    except ModuleNotFoundError:
+        return None
 
     if not (model_dir.is_dir() or model_dir.is_file()):
         return None

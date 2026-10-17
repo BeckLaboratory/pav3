@@ -64,6 +64,9 @@ approximation of the structure for the call, the full structure is not lost.
 DEFAULT_ALIGN_TRIM_MAX_DEPTH = 20
 """Default maximum depth for alignments before applying the DEPTH filter."""
 
+DEFAULT_MIN_MAPQ = 20
+"""Default minimum MAPQ for alignment records. Records below this threshold are tagged with the MAPQ filter."""
+
 
 #
 # Inversion parameters
@@ -124,22 +127,11 @@ available and falls back to "conv" otherwise.
 DEFAULT_MERGE_PARAMS: dict[str, list[dict[str, Any]]] = {
     'insdel': [
         {
-            'ro_min': 0.5,
-            'match_prop_min': 0.8,
+            'offset_max': 0,
+            'size_ro_min': 0.998,
+            'match_prop_min': 0.998,
             'match_vartype': True,
         },
-        {
-            'size_ro_min': 0.8,
-            'offset_max': 200,
-            'match_prop_min': 0.8,
-            'match_vartype': True,
-        },
-        {
-            'offset_prop_max': 2.0,
-            'size_ro_min': 0.8,
-            'match_prop_min': 0.8,
-            'match_vartype': True,
-        }
     ],
     'inv': [
         {
@@ -155,9 +147,10 @@ DEFAULT_MERGE_PARAMS: dict[str, list[dict[str, Any]]] = {
     ],
     'cpx': [
         {
+            'offset_max': 0,
             'ro_min': 0.5,
-            'seg_ro_min': 0.5,
-            'match_prop_min': 0.8,
+            'seg_ro_min': 0.8,
+            'match_prop_min': 0.98,
         },
     ],
     'dup': [
@@ -166,7 +159,21 @@ DEFAULT_MERGE_PARAMS: dict[str, list[dict[str, Any]]] = {
         },
     ],
 }
-"""Default parameters for merging haplotypes."""
+"""Default parameters for merging haplotypes.
+
+Haplotypes of one sample are aligned and called the same way, so an allele present on both haplotypes is called at the
+same position with the same sequence. These parameters merge only those (a small size and sequence tolerance remains
+for large variants). Looser parameters collapse distinct alleles into one homozygous record and relocate variants from
+one haplotype to the position of the other. Override with config parameter "merge_params".
+"""
+
+
+#
+# Workflow parameters
+#
+
+DEFAULT_PERF_LOG_INTERVAL: int = 30
+"""Seconds between resource snapshots when config parameter "perf_log" is "true" (same as variant_discovery)."""
 
 
 #
@@ -177,7 +184,7 @@ DEFAULT_MERGE_PARAMS: dict[str, list[dict[str, Any]]] = {
 FILTER_REASON: dict[str, str] = {
     'LCALIGN': 'Variant inside a low-confidence alignment record',
     'ALIGN': 'Variant inside an alignment record that had a filtered flag (matches 0x700 in alignment flags)',
-    'MAPQ': 'Variant inside an alignment record that did not meet a minimum MAPQ threshold',
+    'MAPQ': 'Variant inside an alignment record that did not meet the minimum MAPQ threshold (parameter min_mapq)',
     'DISCORD': 'Discordant with another variant (i.e. small variants inside a deletion)',
     'INNER': 'Part of a larger variant call (i.e. SNVs and indels inside a duplication or complex event)',
     'DERIVED': 'A noncanonical variant form derived from another (i.e. DUP derived from an INS variant or DELs and '

@@ -173,6 +173,7 @@ def _interval_cpx(len_qry: int, len_dup: int) -> SimpleNamespace:
         region_qry=Region('q1', 2000, 2000 + len_qry),
         region_ref_qryref=Region('chr1', 2400 - len_dup, 2400),
         region_qry_qryref=Region('q1', 2000 - len_dup, 2000 + len_qry),
+        len_ref_qryref=0,
         qryref_spans_outer_dup=True,
         qry_aligned_pass_prop=1.0,
     )

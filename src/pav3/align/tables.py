@@ -311,7 +311,7 @@ def sam_to_align_table(
 
                 pos_ref = int(tok[3]) - 1
 
-                # Skipped unmapped reads, low MAPQ reads, or other flag-based filters
+                # Skip unmapped records (low MAPQ and flag-filtered records are tagged with a filter below)
                 if flags & 0x4 or pos_ref < 0:
                     continue
 

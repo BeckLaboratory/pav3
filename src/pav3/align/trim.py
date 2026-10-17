@@ -148,7 +148,7 @@ def trim_alignments_qry(
             pl.col('qry_end') - pl.col('qry_pos') >= min_trim_qry_len
         )
         .with_columns(
-            (pl.col('filter').list.len() == 0).alias('_is_filtered')
+            (pl.col('filter').list.len() > 0).alias('_is_filtered')
         )
     )
 
@@ -218,11 +218,8 @@ def trim_alignments_qry(
             ) * (
                 (row_r['qry_end'] - row_l['qry_end'])
             ) >= 0:
-                # One record contained within the other: Set the least inactive (by score, then by length)
-                sorted([
-                    (row_l['score'], row_l['qry_end'] - row_l['qry_pos'], row_l['_index'], row_l),
-                    (row_r['score'], row_r['qry_end'] - row_r['qry_pos'], row_r['_index'], row_r)
-                ])[0][-1]['_active'] = False
+                # One record contained within the other: Deactivate one record
+                _contained_inactive(row_l, row_r, 'qry_pos', 'qry_end')
 
                 continue
 
@@ -237,7 +234,7 @@ def trim_alignments_qry(
             rev_r = row_r['is_rev']      # Trim left end of index_r
 
             # Determine which side to preferentially trim in case of ties
-            if row_l['chrom'] == row_r['chrom'] and row_l['is_rev'] != row_r['is_rev']:
+            if row_l['chrom'] == row_r['chrom'] and row_l['is_rev'] == row_r['is_rev']:
                 # Same chromosome and orientation, preferentially trim left-most record to maintain left-aligning
                 # breakpoints.
 
@@ -426,7 +423,7 @@ def trim_alignments_ref(
             pl.col('qry_end') - pl.col('qry_pos') >= min_trim_qry_len
         )
         .with_columns(
-            (pl.col('filter').list.len() == 0).alias('_is_filtered')
+            (pl.col('filter').list.len() > 0).alias('_is_filtered')
         )
     )
 
@@ -498,11 +495,8 @@ def trim_alignments_ref(
             ) * (
                 (row_r['end'] - row_l['end'])
             ) >= 0:
-                # One record contained within the other: Set the least inactive (by score, then by length)
-                sorted([
-                    (row_l['score'], row_l['end'] - row_l['pos'], row_l['_index'], row_l),
-                    (row_r['score'], row_r['end'] - row_r['pos'], row_r['_index'], row_r)
-                ])[0][-1]['_active'] = False
+                # One record contained within the other: Deactivate one record
+                _contained_inactive(row_l, row_r, 'pos', 'end')
 
                 continue
 
@@ -611,6 +605,33 @@ def trim_alignments_ref(
     check_table(df_trim)
 
     return df_trim
+
+
+def _contained_inactive(
+        row_l: dict[str, Any],
+        row_r: dict[str, Any],
+        pos_col: str,
+        end_col: str,
+) -> None:
+    """Deactivate one of two records where one is contained within the other.
+
+    If exactly one record is filtered, the filtered record is deactivated. Otherwise, the record with the lower score
+    is deactivated, then the shorter record, then the record with the lower index.
+
+    :param row_l: Alignment record (modified in place).
+    :param row_r: Alignment record (modified in place).
+    :param pos_col: Start position column (e.g. "pos" or "qry_pos").
+    :param end_col: End position column (e.g. "end" or "qry_end").
+    """
+    sorted(
+        [row_l, row_r],
+        key=lambda row: (
+            not row['_is_filtered'],
+            row['score'],
+            row[end_col] - row[pos_col],
+            row['_index'],
+        )
+    )[0]['_active'] = False
 
 
 def _trim_alignment_record(

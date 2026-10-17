@@ -2,8 +2,10 @@
 
 __all__ = [
     'call',
+    'perf',
     'resource',
 ]
 
 from . import call
+from . import perf
 from . import resource

@@ -12,7 +12,6 @@ __all__ = [
     'subseq_align',
 ]
 
-import json
 import logging
 from pathlib import Path
 from typing import Any, Optional
@@ -37,14 +36,11 @@ def _load_pav_context(pav_dir: Optional[str | Path]) -> tuple[Path, dict, pl.Dat
     pav_dir = Path(pav_dir) if pav_dir is not None else Path('.')
 
     try:
-        config_path = pipeline.get_pav_config_path(root_path=pav_dir)
-
-        with open(config_path, encoding='utf-8') as config_file:
-            config = json.load(config_file)
+        config = pipeline.read_pav_config(pipeline.get_pav_config_path(root_path=pav_dir))
 
         asm_table_path = pipeline.get_pav_asm_table_path(pav_config=config, root_path=pav_dir)
         asm_table = pipeline.read_assembly_table(asm_table_path, config)
-    except (FileNotFoundError, ValueError, json.JSONDecodeError) as e:
+    except (FileNotFoundError, ValueError) as e:
         raise LiftConfigError(f'Failed to load PAV configuration from "{pav_dir}": {e}') from e
 
     return pav_dir, config, asm_table

@@ -14,15 +14,21 @@ __all__ = [
     'VARTYPE_COMPAT',
     'REF_SPAN_VARTYPE',
     'SVCLAIM_VARTYPE',
+    'SEQ_VARTYPE',
     'alt_subtype_expr',
     'get_headers',
     'init_vcf_fields',
     'vcf_fields_seq_insdel',
+    'vcf_fields_seq_cpx',
     'vcf_fields_sym',
     'vcf_fields_snv',
-    'gt_column_iterator',
+    'gt_column_asm',
     'standard_info_fields',
+    'VCF_RECORD_COLUMNS',
+    'vcf_record_table',
+    'combine_multiallelic',
     'reformat_vcf_table',
+    'resolve_hap_list',
 ]
 
 
@@ -34,6 +40,7 @@ import threading
 from typing import Optional
 
 import agglovar
+import numpy as np
 import polars as pl
 import polars.selectors as cs
 import pysam
@@ -238,6 +245,10 @@ def alt_subtype_expr() -> pl.Expr:
     )
 
 
+SEQ_VARTYPE = frozenset({'INS', 'DEL', 'SNV'})
+"""Variant types always written with sequence-resolved REF and ALT. Complex variants are also sequence-resolved unless
+symbolic complex variants are requested (see `init_vcf_fields`)."""
+
 REF_SPAN_VARTYPE = frozenset({'DEL', 'INV', 'DUP', 'CPX'})
 """Variant types spanning reference bases, which receive an INFO/END annotation.
 
@@ -306,17 +317,22 @@ def init_vcf_fields(
     ref_fa: Optional[str | Path] = None,
     use_sym: Optional[bool] = None,
     vartype: Optional[str] = None,
+    cpx_symbolic: bool = False,
 ) -> pl.LazyFrame:
     """Initialize VCF fields.
 
     :param df: Variant table with an "_index" column.
     :param ref_fa: Reference FASTA filename. Required for non-SNV variants.
-    :param use_sym: Whether to use symbolic alternate records. If None, INS, DEL, and SNV ore not
-        symbolic, and all other variant types are.
+    :param use_sym: Whether to use symbolic alternate records. If None, INS, DEL, SNV, and CPX (unless
+        `cpx_symbolic` is set) are not symbolic, and all other variant types are.
     :param vartype: Expected variant type or types (i.e. "insdel" allows "INS" and "DEL"). Setting
         this field ensures the variant types is handled consisntently if all variant types
         are not in table `df` or `df` is empty.
+    :param cpx_symbolic: Write complex variants as symbolic "<CPX>" records instead of sequence-resolved REF and ALT
+        when `use_sym` is None.
     """
+    seq_vartype_set = SEQ_VARTYPE | ({'CPX'} if not cpx_symbolic else set())
+
     if df.collect_schema().get('_index') is None:
         df = df.with_row_index('_index')
 
@@ -351,8 +367,8 @@ def init_vcf_fields(
 
     if use_sym is None:
 
-        no_sym_set = vartype_set & {'INS', 'DEL', 'SNV'}
-        is_sym_set = vartype_set - {'INS', 'DEL', 'SNV'}
+        no_sym_set = vartype_set & seq_vartype_set
+        is_sym_set = vartype_set - seq_vartype_set
 
         if not (no_sym_set or is_sym_set):
             use_sym = False
@@ -360,7 +376,7 @@ def init_vcf_fields(
         elif no_sym_set and is_sym_set:
             raise ValueError(
                 f'Unable to automatically determine whether to use symbolic ALTs or sequence ALTs given variant types '
-                f'using sequence ALTs (INS, DEL, SNV) and symbolic ALTs (all others): '
+                f'using sequence ALTs ({", ".join(sorted(seq_vartype_set))}) and symbolic ALTs (all others): '
                 f'Found variant types {", ".join(vartype_set)}'
             )
         else:
@@ -369,9 +385,9 @@ def init_vcf_fields(
     if use_sym and is_snv:
         raise ValueError('Variant type "SNV" cannot use symbolic ALTs')
 
-    if not use_sym and (vartype_set - {'INS', 'DEL', 'SNV'}):
+    if not use_sym and (vartype_set - SEQ_VARTYPE - {'CPX'}):
         raise ValueError(
-            f'Can only use sequence ALTs for INS, DEL, and SNV: '
+            f'Can only use sequence ALTs for INS, DEL, SNV, and CPX: '
             f'Found variant types {", ".join(vartype_set)}'
         )
 
@@ -389,7 +405,25 @@ def init_vcf_fields(
         if ref_fa is None:
             raise ValueError('Missing reference FASTA filename: Required for non-SNV sequence ALTs')
 
-        df_pos_ref_alt = vcf_fields_seq_insdel(df, ref_fa)
+        df_pos_ref_alt_list = []
+
+        if vartype_set & {'INS', 'DEL'}:
+            df_pos_ref_alt_list.append(
+                vcf_fields_seq_insdel(df.filter(pl.col('vartype').is_in(['INS', 'DEL'])), ref_fa)
+                .select('_index', '_vcf_pos', '_vcf_ref', '_vcf_alt', '_is_sym_alt')
+            )
+
+        if 'CPX' in vartype_set:
+            df_pos_ref_alt_list.append(
+                vcf_fields_seq_cpx(df.filter(pl.col('vartype') == 'CPX'), ref_fa)
+                .select('_index', '_vcf_pos', '_vcf_ref', '_vcf_alt', '_is_sym_alt')
+            )
+
+        df_pos_ref_alt = (
+            pl.concat(df_pos_ref_alt_list)
+            if df_pos_ref_alt_list else
+            vcf_fields_seq_insdel(df, ref_fa).select('_index', '_vcf_pos', '_vcf_ref', '_vcf_alt', '_is_sym_alt')
+        )
 
     # Initialize fields
     df_vcf = (
@@ -567,11 +601,122 @@ def vcf_fields_seq_insdel(
         )
     )
 
-    # Reject structurally invalid records.
-    #
-    # REF and ALT must both be non-empty, and a record with REF matching ALT describes no variant. Both occur when
-    # "seq" is null or empty for a variant type that needs it, which is a callset bug worth failing on rather than
-    # writing out for a downstream tool to trip over.
+    _check_ref_alt(df_fields, label_col_list[0] if label_col_list else '_index')
+
+    return df_fields.drop(label_col_list).lazy()
+
+
+def vcf_fields_seq_cpx(
+    df: pl.LazyFrame,
+    ref_fa: Path | str,
+) -> pl.LazyFrame:
+    """Set POS, REF, and ALT VCF fields for sequence-resolved complex variants.
+
+    A complex variant replaces reference bases [seq_ref_pos, seq_ref_end) with its sequence ("seq"), and the
+    sequence-resolved record describes exactly that, so applying it to the reference (e.g. "bcftools consensus")
+    reconstructs the haplotype. The reference region is empty for a complex variant deleting no reference bases.
+
+    As with insertions and deletions, REF and ALT start with the reference base before the replaced region, or end
+    with the base after it when the region starts at the first base of the chromosome.
+
+    Returned table has fields:
+
+    * _index: Index of variant.
+    * _vcf_pos: Variant position for VCF field "POS".
+    * _vcf_ref: Reference sequence for VCF field "REF".
+    * _vcf_alt: Alternate sequence for VCF field "ALT".
+    * _is_sym_alt: Whether the alternate sequence is a symbolic alternate (always False).
+
+    :param df: Variant table with an "_index" column and "seq_ref_pos", "seq_ref_end", and "seq" columns.
+    :param ref_fa: Reference FASTA filename.
+
+    :returns: Variant table with VCF fields.
+
+    :raises ValueError: If columns are missing or the REF and ALT fields are invalid for any record.
+    """
+    if ref_fa is None:
+        raise ValueError('Missing reference FASTA filename')
+
+    if missing_cols := {'seq_ref_pos', 'seq_ref_end', 'seq'} - set(df.collect_schema().names()):
+        raise ValueError(
+            f'Missing columns for sequence-resolved complex variants: {", ".join(sorted(missing_cols))} '
+            f'(complex variant tables from an earlier PAV version must be regenerated, or write symbolic complex '
+            f'variants with config parameter "vcf_cpx_symbolic")'
+        )
+
+    label_col_list = ['id'] if 'id' in df.collect_schema().names() else []
+
+    df_fields = df.with_columns(
+        (pl.col('seq_ref_pos') > 0).alias('_ref_base_left')
+    )
+
+    # Fetch the replaced reference bases with the padding base (left if possible, right otherwise)
+    with _LockingPysam(str(ref_fa)) as ref_file:
+        df_fields = (
+            df_fields
+            .select(
+                '_index',
+                '_ref_base_left',
+                'seq_ref_pos',
+                'seq',
+                (
+                    pl.struct(['chrom', 'seq_ref_pos', 'seq_ref_end', '_ref_base_left'])
+                    .map_elements(
+                        lambda vals: ref_file.fetch(
+                            str(vals['chrom']),
+                            int(vals['seq_ref_pos'] - (1 if vals['_ref_base_left'] else 0)),
+                            int(vals['seq_ref_end'] + (0 if vals['_ref_base_left'] else 1)),
+                        ),
+                        return_dtype=pl.String
+                    )
+                    .cast(pl.String)
+                    .alias('_vcf_ref')
+                ),
+                *label_col_list,
+            )
+            .collect()  # Must collect while ref_file is open
+        )
+
+    df_fields = df_fields.select(
+        '_index',
+        (
+            pl.when(pl.col('_ref_base_left'))
+            .then(pl.col('seq_ref_pos'))
+            .otherwise(pl.col('seq_ref_pos') + 1)
+            .alias('_vcf_pos')
+        ),
+        '_vcf_ref',
+        (
+            pl.when(pl.col('_ref_base_left'))
+            .then(pl.concat_str(pl.col('_vcf_ref').str.head(1), 'seq'))
+            .otherwise(pl.concat_str('seq', pl.col('_vcf_ref').str.tail(1)))
+            .cast(pl.String)
+            .alias('_vcf_alt')
+        ),
+        pl.lit(False).alias('_is_sym_alt'),
+        *label_col_list,
+    )
+
+    _check_ref_alt(df_fields, label_col_list[0] if label_col_list else '_index')
+
+    return df_fields.drop(label_col_list).lazy()
+
+
+def _check_ref_alt(
+    df_fields: pl.DataFrame,
+    label_col: str,
+) -> None:
+    """Reject structurally invalid sequence-resolved records.
+
+    REF and ALT must both be non-empty, and a record with REF matching ALT describes no variant. Both occur when "seq"
+    is null or empty for a variant type that needs it, which is a callset bug worth failing on rather than writing out
+    for a downstream tool to trip over.
+
+    :param df_fields: Table with "_vcf_ref" and "_vcf_alt" columns.
+    :param label_col: Column identifying records in error messages.
+
+    :raises ValueError: If any record is invalid.
+    """
     df_invalid = df_fields.filter(
         pl.col('_vcf_ref').is_null()
         | pl.col('_vcf_alt').is_null()
@@ -581,8 +726,6 @@ def vcf_fields_seq_insdel(
     )
 
     if df_invalid.height > 0:
-        label_col = label_col_list[0] if label_col_list else '_index'
-
         label_list = [
             str(label) for label in df_invalid[label_col].head(_MAX_INVALID_REPORT).to_list()
         ]
@@ -593,8 +736,6 @@ def vcf_fields_seq_insdel(
             f'{", ".join(label_list)}'
             f'{", ..." if df_invalid.height > len(label_list) else ""}'
         )
-
-    return df_fields.drop(label_col_list).lazy()
 
 
 def vcf_fields_sym(
@@ -624,16 +765,23 @@ def vcf_fields_sym(
         pl.lit(None).cast(pl.String)
     )
 
+    # POS is the padding base before the variant (0-based pos - 1, or 1-based pos), and REF is that base. A variant
+    # starting at the first base of the chromosome has no base before it and takes the first base.
     with _LockingPysam(ref_fa) as ref_file:
         return (
             df
+            .with_columns(
+                pl.max_horizontal(pl.col('pos'), pl.lit(1)).alias('_vcf_pos')
+            )
             .select(
                 '_index',
-                pl.col('pos').alias('_vcf_pos'),
+                '_vcf_pos',
                 (
-                    pl.struct([pl.col('chrom'), pl.col('pos')])
+                    pl.struct([pl.col('chrom'), pl.col('_vcf_pos')])
                     .map_elements(
-                        lambda vals: ref_file.fetch(str(vals['chrom']), int(vals['pos']), int(vals['pos'] + 1)),
+                        lambda vals: ref_file.fetch(
+                            str(vals['chrom']), int(vals['_vcf_pos'] - 1), int(vals['_vcf_pos'])
+                        ),
                         return_dtype=pl.String
                     )
                     .cast(pl.String)
@@ -694,84 +842,6 @@ def vcf_fields_snv(
             pl.lit(False).alias('_is_sym_alt'),
         )
     )
-
-
-def gt_column_iterator(
-    df: pl.LazyFrame | pl.DataFrame,
-    hap_order: Iterable[tuple[str, str]],
-    callable_dict: dict[tuple[str, str], pl.LazyFrame | pl.DataFrame],
-    gt_col_name: str = 'gt',
-) -> Iterable[tuple[str, pl.LazyFrame]]:
-    """Get genotype columns for all assemblies/samples.
-
-    Argument `hap_order` is a list of assembly/haplotype pairs, and it determines the order of
-    assemblies (or "samples") and the order of haplotypes for each sample. Generally, it should
-    list all the haplotypes for a sample sequentially (e.g.
-    `[("a", "h1"), ("a", "h2"), ("b", "h1"), ("b", "h2")]`). If assemblies are not listed
-    sequentially, then the first accurance of each assembly name determines the order, but
-    haplotype order for each assembly is still preserved.
-
-    Returns an iterator of assembly name and genotype table. The genotype table contains two
-    columns: Column "_index" is the index of `df`, and the second column is string genotypes for
-    each record with a column name defined by argument `gt_col_name`.
-
-    :param df: Table of merged variants.
-    :param hap_order: An iterable of assembly/haplotype tuples in the order they will appear.
-    :param callable_dict: A dict keyed by assembly name and haplotype (tuple) pointing to tables
-        of callable reference regions.
-    :param gt_col_name: Name of the genotype column in the returned genotype tables. May not be
-        "_index".
-
-    :returns: An iterator of tuples (assembly name, and genotype table).
-    """
-    if gt_col_name is None or not (gt_col_name := gt_col_name.strip()):
-        gt_col_name = 'gt'
-
-    if gt_col_name == '_index':
-        raise ValueError(
-            'Genotype column argument "gt_col_name" cannot use reserved '
-            'column name for row indexes, "_index"'
-        )
-
-    # Set and check assembly and haplotype orders
-    hap_order = list(hap_order)
-
-    if dup_asm_hap := [
-        asm_hap for asm_hap, count in collections.Counter(f'{asm_name}-{hap}' for asm_name, hap in hap_order).items()
-        if count > 1
-    ]:
-        n = len(dup_asm_hap)
-        dup_asm_hap = ', '.join(dup_asm_hap[:3]) + ('...' if n > 3 else '')
-        raise ValueError(
-            f'Assembly/haplotype pairs must be unique when separated by a dash: '
-            f'Found {n} duplicate pairs: {dup_asm_hap}'
-        )
-
-    asm_order = list(dict.fromkeys((asm_name for asm_name, hap in hap_order)).keys())
-
-    # List of ordered haplotypes per assembly
-    hap_dict = {
-        asm_name_ordered: list(dict.fromkeys((
-            hap for asm_name, hap in hap_order if asm_name == asm_name_ordered
-        )).keys())
-        for asm_name_ordered in asm_order
-    }
-
-    # Callable dict should have LazyFrame
-    callable_dict = dict(callable_dict)
-
-    for (asm_name, hap), df_callable in callable_dict.values():
-        if isinstance(df_callable, pl.DataFrame):
-            df_callable[(asm_name, hap)] = df_callable.lazy()
-
-    for asm_name in hap_dict.keys():
-        yield asm_name, gt_column_asm(
-            df,
-            asm_name=asm_name,
-            callable_dict=callable_dict,
-            col_name='gt',
-            separator='|',
-        )
 
 
 def gt_column_asm(
@@ -985,17 +1055,24 @@ def standard_info_fields(
         )
 
     if len(cols & {'qry_id', 'qry_pos', 'qry_end'}) == 3:
+        # Variants derived from complex events at the outer breakpoint have no query region (see
+        # `pav3.call.integrate.add_cpx_derived`).
         df = df.with_columns(
-            pl.col('_vcf_info').list.concat(
-                pl.concat_str(
-                    pl.lit('QUERY='),
-                    pl.col('qry_id'),
-                    pl.lit(':'),
-                    pl.col('qry_pos') + 1,
-                    pl.lit('-'),
-                    pl.col('qry_end')
+            pl.when(pl.all_horizontal(pl.col('qry_id', 'qry_pos', 'qry_end').is_not_null()))
+            .then(
+                pl.col('_vcf_info').list.concat(
+                    pl.concat_str(
+                        pl.lit('QUERY='),
+                        pl.col('qry_id'),
+                        pl.lit(':'),
+                        pl.col('qry_pos') + 1,
+                        pl.lit('-'),
+                        pl.col('qry_end')
+                    )
                 )
             )
+            .otherwise('_vcf_info')
+            .alias('_vcf_info')
         )
 
     if 'qry_rev' in cols:
@@ -1133,7 +1210,383 @@ def standard_info_fields(
     #         .alias('_vcf_info')
     #     )
 
-    return df
+    # A field built from a missing value is null (e.g. HOMLEN with a missing breakpoint side). Leave it out of INFO,
+    # which the VCF writer did implicitly, so records combined by `combine_multiallelic` never see null fields.
+    return df.with_columns(
+        pl.col('_vcf_info').list.drop_nulls()
+    )
+
+
+VCF_RECORD_COLUMNS = (
+    '_vcf_chrom', '_vcf_pos', '_vcf_id', '_vcf_ref', '_vcf_alt', '_vcf_filter', '_vcf_info', '_vcf_format',
+    '_is_sym_alt',
+)
+"""Columns of a VCF record table before it is formatted (see `vcf_record_table`), excluding sample columns."""
+
+
+def vcf_record_table(
+    df: pl.LazyFrame,
+    sample_col_prefix: str = '_vcf_sample_',
+) -> pl.LazyFrame:
+    """Select VCF record fields from a variant table with VCF fields set.
+
+    The table has one row per VCF record with fields that are not yet formatted (INFO, FORMAT, and sample fields are
+    lists), so records from different variant types may be concatenated and combined (see `combine_multiallelic`)
+    before they are formatted by `reformat_vcf_table`.
+
+    :param df: Variant table with VCF fields ("_vcf_" columns, see `init_vcf_fields`).
+    :param sample_col_prefix: Prefix of sample columns.
+
+    :returns: Table of VCF records.
+    """
+    return df.select(
+        *VCF_RECORD_COLUMNS,
+        cs.starts_with(sample_col_prefix),
+    )
+
+
+def combine_multiallelic(
+    df: pl.LazyFrame | pl.DataFrame,
+    sample_col_prefix: str = '_vcf_sample_',
+    log_stats: Optional[dict[str, int]] = None,
+) -> pl.LazyFrame:
+    """Combine sequence-resolved records at the same position into multi-allelic records.
+
+    Haplotypes carrying different alleles at one site are written as separate records by default, one per allele
+    (e.g. "1|0" and "0|1"). Comparison tools (e.g. vcfeval) and "bcftools consensus" do not reliably resolve
+    overlapping records, so records at the same position are combined into one record with an ALT per distinct allele
+    (e.g. "1|2").
+
+    Records are combined if they are sequence-resolved, have the same CHROM, POS, and FILTER, and if no haplotype
+    carries more than one of them. Records with different filters are not combined so that a passing allele is never
+    filtered by an allele on another haplotype. If a haplotype carries more than one record at the same position
+    (e.g. an SNV and an insertion after it), the records are left as they are. Records are also left as they are if
+    extending a haplotype's allele to the combined REF would overlap another variant on that haplotype (e.g. an SNV
+    combined with a deletion on the other haplotype, and a second SNV inside the deletion on the SNV's haplotype),
+    which would make the two variants on one haplotype overlap. Overlapping records starting at different positions
+    are not combined.
+
+    In a combined record:
+
+    * REF: The longest REF. All records start at the same position, so shorter REF alleles are a prefix of it.
+    * ALT: One per distinct allele, each extended by the reference bases the longer REF adds, in order of haplotypes
+      carrying them. Alleles no haplotype carries (e.g. haplotypes excluded from the VCF) follow.
+    * ID: IDs separated by semicolons in ALT order.
+    * INFO: Per-allele (Number=A) values in ALT order. Values from the first record are used when two records have
+      the same ALT allele. A value missing from a record is ".". Fields that are not per-allele are dropped.
+    * GT: The ALT allele index for haplotypes carrying an allele. Haplotypes carrying no allele are "0" unless no
+      record is callable on that haplotype ("."), for which every record has ".".
+
+    :param df: Table of VCF records (see `vcf_record_table`) with genotypes as the first element of each sample
+        column (alleles separated by "|" or "/").
+    :param sample_col_prefix: Prefix of sample columns.
+    :param log_stats: If not None, add statistics to this dictionary: "n_record_in", "n_record_out",
+        "n_combined_record" (records combined into multi-allelic records), "n_combined_site" (multi-allelic records
+        written), "n_conflict_site" (sites with records that could not be combined because a haplotype carries more
+        than one), "n_span_conflict_site" (sites not combined because an extended allele would overlap another variant
+        on its haplotype), and "n_overlap_record" (records overlapping the REF of a preceding record at a different
+        position).
+
+    :returns: Table of VCF records (LazyFrame evaluating `df` again when collected).
+    """
+    if isinstance(df, pl.DataFrame):
+        df = df.lazy()
+
+    sample_cols = [col for col in df.collect_schema().names() if col.startswith(sample_col_prefix)]
+
+    info_number = {info_field.name: info_field.number for info_field in INFO_FIELDS}
+
+    group_cols = ['_vcf_chrom', '_vcf_pos', '_vcf_filter']
+
+    # Flag records sharing a site. Only these are collected, other records pass through.
+    df = (
+        df.with_row_index('_rec_index')
+        .with_columns(
+            (
+                (~ pl.col('_is_sym_alt'))
+                & (pl.col('_vcf_pos').count().over([*group_cols, '_is_sym_alt']) > 1)
+            ).alias('_is_multi')
+        )
+    )
+
+    df_schema = df.collect_schema()
+
+    df_multi = df.filter(pl.col('_is_multi')).collect().sort('_rec_index')
+
+    stats = collections.Counter({
+        'n_record_in': df.select(pl.len()).collect().item(),
+        'n_combined_record': 0,
+        'n_combined_site': 0,
+        'n_conflict_site': 0,
+        'n_span_conflict_site': 0,
+    })
+
+    hap_var_index = _HapVariantIndex(df, sample_cols) if df_multi.height > 0 else None
+
+    out_rows = []
+
+    for _, df_group in df_multi.group_by(group_cols, maintain_order=True):
+        rows = df_group.rows(named=True)
+
+        combined = _combine_site(rows, sample_cols, info_number, hap_var_index)
+
+        if combined is None:
+            stats['n_conflict_site'] += 1
+            out_rows.extend(rows)
+        elif combined == 'span':
+            stats['n_span_conflict_site'] += 1
+            out_rows.extend(rows)
+        else:
+            stats['n_combined_record'] += len(rows)
+            stats['n_combined_site'] += 1
+            out_rows.append(combined)
+
+    df_out = (
+        pl.concat(
+            [
+                df.filter(~ pl.col('_is_multi')),
+                pl.DataFrame(out_rows, schema=df_schema).lazy(),
+            ]
+        )
+        .sort('_vcf_chrom', '_vcf_pos', '_rec_index')
+        .drop('_rec_index', '_is_multi')
+    )
+
+    if log_stats is not None:
+        stats['n_record_out'] = stats['n_record_in'] - stats['n_combined_record'] + stats['n_combined_site']
+
+        # Count sequence-resolved records overlapping the REF of a preceding record at a different position. These
+        # are not combined.
+        stats['n_overlap_record'] = (
+            df_out
+            .filter(~ pl.col('_is_sym_alt'))
+            .select(
+                '_vcf_chrom', '_vcf_pos',
+                (pl.col('_vcf_pos') + pl.col('_vcf_ref').str.len_chars()).alias('_ref_end')
+            )
+            .with_columns(
+                pl.col('_ref_end').cum_max().shift(1).over('_vcf_chrom').alias('_prev_end'),
+                pl.col('_vcf_pos').shift(1).over('_vcf_chrom').alias('_prev_pos'),
+            )
+            .filter(
+                (pl.col('_vcf_pos') < pl.col('_prev_end'))
+                & (pl.col('_vcf_pos') != pl.col('_prev_pos'))
+            )
+            .select(pl.len())
+            .collect()
+            .item()
+        )
+
+        log_stats.update(stats)
+
+    return df_out
+
+
+class _HapVariantIndex:
+    """Positions of records carried by each haplotype, for finding variants on one haplotype in a region."""
+
+    def __init__(
+        self,
+        df: pl.LazyFrame,
+        sample_cols: list[str],
+    ) -> None:
+        """Index positions of all records carried by each haplotype.
+
+        :param df: Table of VCF records with genotypes as the first element of each sample column.
+        :param sample_cols: Sample columns.
+        """
+        df_gt = (
+            df.select(
+                '_vcf_chrom', '_vcf_pos',
+                *[
+                    pl.col(sample_col).list.first().str.replace_all('/', '|').str.split('|').alias(sample_col)
+                    for sample_col in sample_cols
+                ]
+            )
+            .collect()
+        )
+
+        self.pos_dict: dict[tuple[str, int, str], np.ndarray] = {}
+
+        for sample_col in sample_cols:
+            n_hap = df_gt.select(pl.col(sample_col).list.len().max()).item() or 0
+
+            for hap_i in range(n_hap):
+                for chrom, pos_list in (
+                    df_gt
+                    .filter(pl.col(sample_col).list.get(hap_i, null_on_oob=True) == '1')
+                    .group_by('_vcf_chrom')
+                    .agg(pl.col('_vcf_pos').sort())
+                    .iter_rows()
+                ):
+                    self.pos_dict[(sample_col, hap_i, chrom)] = np.asarray(pos_list)
+
+    def has_variant(
+        self,
+        sample_col: str,
+        hap_i: int,
+        chrom: str,
+        start: int,
+        end: int,
+    ) -> bool:
+        """Determine if a haplotype carries a record with POS in [start, end)."""
+        pos_arr = self.pos_dict.get((sample_col, hap_i, chrom), None)
+
+        if pos_arr is None:
+            return False
+
+        i = np.searchsorted(pos_arr, start, side='left')
+
+        return bool(i < len(pos_arr) and pos_arr[i] < end)
+
+
+def _combine_site(
+    rows: list[dict],
+    sample_cols: list[str],
+    info_number: dict[str, str],
+    hap_var_index: Optional[_HapVariantIndex] = None,
+) -> Optional[dict | str]:
+    """Combine records at one site into a multi-allelic record.
+
+    :param rows: Records at the same site (same CHROM, POS, and FILTER), in output order.
+    :param sample_cols: Sample columns.
+    :param info_number: INFO "Number" for each INFO field.
+    :param hap_var_index: Positions of records carried by each haplotype. If None, extended alleles are not checked
+        for overlapping variants on the same haplotype.
+
+    :returns: A combined record, "span" if an extended allele would overlap another variant on its haplotype, or None
+        if the records cannot be combined for another reason.
+    """
+    # All records must have the same FORMAT with GT first, and REF alleles must share a prefix.
+    if any(row['_vcf_format'] != rows[0]['_vcf_format'] for row in rows) or rows[0]['_vcf_format'] != ['GT']:
+        return None
+
+    ref = max((row['_vcf_ref'].upper() for row in rows), key=len)
+
+    if not all(ref.startswith(row['_vcf_ref'].upper()) for row in rows):
+        return None
+
+    # Genotypes per record and sample
+    rec_gt = []  # [record][sample] -> list of allele strings
+    sample_sep = {}
+
+    for row in rows:
+        gt_list = []
+
+        for sample_col in sample_cols:
+            gt = row[sample_col][0]
+            sep = '/' if '/' in gt else '|'
+            sample_sep.setdefault(sample_col, sep)
+            gt_list.append(gt.split(sep))
+
+        rec_gt.append(gt_list)
+
+    # Each haplotype may carry at most one record
+    n_hap = {sample_col: len(rec_gt[0][i]) for i, sample_col in enumerate(sample_cols)}
+
+    for i, sample_col in enumerate(sample_cols):
+        if any(len(gt[i]) != n_hap[sample_col] for gt in rec_gt):
+            return None
+
+        for hap_i in range(n_hap[sample_col]):
+            if sum(gt[i][hap_i] == '1' for gt in rec_gt) > 1:
+                return None
+
+    # Extending an allele to the combined REF must not overlap another variant on the haplotype carrying it
+    if hap_var_index is not None:
+        site_pos = rows[0]['_vcf_pos']
+        site_chrom = rows[0]['_vcf_chrom']
+
+        for i, sample_col in enumerate(sample_cols):
+            for hap_i in range(n_hap[sample_col]):
+                for rec_i, gt in enumerate(rec_gt):
+                    ref_len = len(rows[rec_i]['_vcf_ref'])
+
+                    if gt[i][hap_i] == '1' and ref_len < len(ref) and hap_var_index.has_variant(
+                        sample_col, hap_i, site_chrom, site_pos + ref_len, site_pos + len(ref)
+                    ):
+                        return 'span'
+
+    # Extended ALT allele for each record
+    rec_alt = [row['_vcf_alt'].upper() + ref[len(row['_vcf_ref']):] for row in rows]
+
+    # Order alleles by haplotypes carrying them, then alleles not carried by any haplotype
+    rec_order = []
+
+    for i, sample_col in enumerate(sample_cols):
+        for hap_i in range(n_hap[sample_col]):
+            for rec_i, gt in enumerate(rec_gt):
+                if gt[i][hap_i] == '1' and rec_i not in rec_order:
+                    rec_order.append(rec_i)
+
+    rec_order.extend(rec_i for rec_i in range(len(rows)) if rec_i not in rec_order)
+
+    alt_list = []        # Distinct ALT alleles in order
+    alt_rec = []         # Record providing fields for each ALT allele
+    rec_allele = {}      # Record index -> 1-based allele index
+
+    for rec_i in rec_order:
+        if rec_alt[rec_i] in alt_list:
+            rec_allele[rec_i] = alt_list.index(rec_alt[rec_i]) + 1
+        else:
+            alt_list.append(rec_alt[rec_i])
+            alt_rec.append(rec_i)
+            rec_allele[rec_i] = len(alt_list)
+
+    # ID
+    id_list = []
+
+    for rec_i in rec_order:
+        rec_id = rows[rec_i]['_vcf_id']
+
+        if rec_id is not None and rec_id != '.' and rec_id not in id_list:
+            id_list.append(rec_id)
+
+    # INFO: Per-allele fields in ALT order
+    rec_info = []
+
+    for rec_i in alt_rec:
+        info_dict = {}
+
+        for info in rows[rec_i]['_vcf_info']:
+            key, val = info.split('=', 1) if '=' in info else (info, None)
+            info_dict[key] = val
+
+        rec_info.append(info_dict)
+
+    info_keys = list(dict.fromkeys(key for info_dict in rec_info for key in info_dict.keys()))
+
+    info_list = [
+        f'{key}=' + ','.join(
+            info_dict.get(key) if info_dict.get(key) is not None else '.' for info_dict in rec_info
+        )
+        for key in info_keys if info_number.get(key) == 'A'
+    ]
+
+    # Genotypes
+    combined = dict(rows[0])
+
+    for i, sample_col in enumerate(sample_cols):
+        allele_list = []
+
+        for hap_i in range(n_hap[sample_col]):
+            carrier = [rec_i for rec_i, gt in enumerate(rec_gt) if gt[i][hap_i] == '1']
+
+            if carrier:
+                allele_list.append(str(rec_allele[carrier[0]]))
+            elif all(gt[i][hap_i] == '.' for gt in rec_gt):
+                allele_list.append('.')
+            else:
+                allele_list.append('0')
+
+        combined[sample_col] = [sample_sep[sample_col].join(allele_list)] + list(rows[0][sample_col][1:])
+
+    combined['_vcf_ref'] = ref
+    combined['_vcf_alt'] = ','.join(alt_list)
+    combined['_vcf_id'] = ';'.join(id_list) if id_list else None
+    combined['_vcf_info'] = info_list
+
+    return combined
 
 
 def reformat_vcf_table(
@@ -1146,12 +1599,7 @@ def reformat_vcf_table(
     strip_len = len(sample_col_prefix)
 
     sample_col_exprs = [
-        (
-            pl.col(sample_col)
-            .list.eval(  # Replacing semicolons should not be needed, but don't break VCFs if they are present
-                pl.element().str.replace_all(';', ':')
-            )
-        ).list.join(';').alias(sample_col[strip_len:])
+        pl.col(sample_col).list.join(':').alias(sample_col[strip_len:])
         for sample_col in schema.keys() if sample_col.startswith(sample_col_prefix)
     ]
 
@@ -1171,7 +1619,7 @@ def reformat_vcf_table(
                     pl.element().str.replace_all(';', ':')
                 )
             ).list.join(';').alias('INFO'),
-            pl.col('_vcf_format').list.join(';').alias('FORMAT'),
+            pl.col('_vcf_format').list.join(':').alias('FORMAT'),
             *sample_col_exprs,
         )
     )

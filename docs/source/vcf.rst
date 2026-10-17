@@ -4,8 +4,34 @@ VCF output
 PAV writes one VCF per sample alongside its Parquet :doc:`variant tables <schemas>`. The header is
 built by :func:`pav3.vcf.get_headers` and the records by :func:`pav3.vcf.reformat_vcf_table`.
 
-PAV targets VCF 4.5. Insertions, deletions, and SNVs are written with sequence-resolved ``REF`` and
-``ALT``; inversions, duplications, and complex variants are written with symbolic alleles.
+PAV targets VCF 4.5. Insertions, deletions, SNVs, and complex variants are written with
+sequence-resolved ``REF`` and ``ALT``; inversions and duplications are written with symbolic alleles.
+Config parameter ``vcf_cpx_symbolic`` writes complex variants with symbolic ``<CPX>`` alleles instead.
+
+Multi-allelic records
+---------------------
+
+Each haplotype carries at most one allele at a site. When haplotypes carry different alleles starting
+at the same position, PAV writes one record with an ``ALT`` per distinct allele (e.g. ``1|2``) rather
+than one record per allele (``1|0`` and ``0|1``), which comparison tools and ``bcftools consensus`` do
+not reliably resolve. ``REF`` is the longest ``REF`` of the combined alleles, and shorter alleles are
+extended with the reference bases it adds. ``ID`` lists the variant IDs separated by semicolons, and
+per-allele INFO fields have one value per ``ALT``.
+
+Records are combined only if they have the same ``FILTER``, so a passing allele is never filtered by
+an allele on another haplotype. Records are not combined when one haplotype carries more than one of
+them (e.g. an SNV and an insertion after the same base), and overlapping records starting at different
+positions are not combined. Symbolic records are never combined.
+
+Complex variants
+----------------
+
+A sequence-resolved complex variant replaces the reference bases skipped between its anchoring
+alignments with the variant sequence (variant table columns ``seq_ref_pos``, ``seq_ref_end``, and
+``seq``), so applying the record to the reference reconstructs the haplotype. When the anchoring
+alignments overlap on the reference (a duplication at the outer breakpoint), nothing is deleted and the
+variant sequence, which includes the duplicated bases, is inserted. ``INFO/SUBTYPE``,
+``INFO/CPX_REF_TRACE``, ``INFO/CPX_QRY_TRACE``, and ``INFO/DUP`` describe the structure.
 
 ALT alleles
 -----------
@@ -67,8 +93,8 @@ a computed field. The table below describes the quantities wherever they are wri
      - Duplicated bases (query)
    * - ``CPX``
      - Inserted bases (query)
-     - Reference breakpoint span
-     - Inserted bases (query)
+     - Reference breakpoint span (symbolic only)
+     - Inserted bases (query, symbolic only)
 
 Two cases deserve attention:
 
@@ -78,8 +104,8 @@ Two cases deserve attention:
    the reference span, so ``len(SEQ)`` is not a size field.
 
 ``CPX``
-   A complex variant has a reference breakpoint part and an inserted sequence part, and the two are
-   reported separately. ``POS`` and ``END`` span the reference bases deleted or duplicated at the
+   For a symbolic ``<CPX>`` allele, a complex variant has a reference breakpoint part and an inserted
+   sequence part, and the two are reported separately. ``POS`` and ``END`` span the reference bases deleted or duplicated at the
    complex site, and ``SVLEN`` counts the ectopic sequence inserted there. A complex variant that
    deletes 500 bp and inserts 200 bp is written with ``SVLEN=200`` and an ``END`` 500 bases past
    ``POS``. The two must not be summed or compared.
