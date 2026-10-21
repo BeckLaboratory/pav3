@@ -127,6 +127,10 @@ def _integrate_sources(
     # List of variant tables to collect from multiple sources
     collect_list = defaultdict(list)
 
+    # Variants derived from other calls (e.g. duplications derived from complex variants and insertions), kept apart
+    # from `collect_list` so their IDs are versioned after the calls they are derived from (see the write below).
+    derived_list = defaultdict(list)
+
     # Parameters controlling how variants are integrated and in what order
     param_dict = {  # do_write, add_discord, filter_discord, filter_inner
         'inter_cpx':    (True,     True,        False,          False),
@@ -195,6 +199,11 @@ def _integrate_sources(
             )
 
         # Version variant IDs prioritizing PASS over non-PASS.
+        #
+        # IDs are final once assigned here. Variants link to them ("derived", "discord", and "inner" columns, and the
+        # CPX segment and reference trace tables), so they are not versioned again when the table is written. A source
+        # is versioned after the sources before it, so a passing variant takes a versioned ID if an earlier source has
+        # a variant with the same ID.
         df = pav3.call.integrate.id_and_version(
             df=df,
             is_snv=is_snv,
@@ -238,14 +247,14 @@ def _integrate_sources(
             pav3.call.integrate.add_cpx_derived(
                 df=df,
                 df_segment=df_segment_var,
-                collect_list=collect_list,
+                collect_list=derived_list,
                 ref_fa=pav3.pipeline.expand_fofn(input['ref_fofn'])[0],
             )
 
         # Add duplications derived from insertions placing a copy of a reference region
         pav3.call.integrate.add_ins_derived(
             df=df,
-            collect_list=collect_list,
+            collect_list=derived_list,
             ref_fa=pav3.pipeline.expand_fofn(input['ref_fofn'])[0],
         )
 
@@ -293,28 +302,26 @@ def _integrate_sources(
             if collect_list[vartype]:
                 df = pl.concat(collect_list[vartype], how='diagonal')
 
+            # Add derived variants. IDs of the calls in `df` are final, so derived variants are versioned after them
+            # and never take an ID that another variant links to.
+            if derived_list[vartype]:
+                df_derived = pav3.call.integrate.id_and_version(
+                    df=(
+                        pl.concat(derived_list[vartype], how='diagonal')
+                        .with_columns(pl.col('filter').list.unique().list.sort())
+                    ),
+                    is_snv=is_snv,
+                    existing_ids=[df],
+                )
+
+                df = pl.concat([df, df_derived], how='diagonal')
+
             # Sort and order columns
             col_names = df.collect_schema().names()
 
             df = (
                 df
-                .with_row_index('_concat_index')
-                .with_columns(
-                    pl.col('filter').list.unique().list.sort()
-                )
-                .sort(
-                    pl.col('filter').list.len(),
-                    '_concat_index',
-                    descending=(True, False),
-                )
-            )
-
-            df = pav3.call.integrate.id_and_version(
-                df=df, is_snv=is_snv,
-            )
-
-            df = (
-                df
+                .with_columns(pl.col('filter').list.unique().list.sort())
                 .sort(pav3.call.expr.sort_expr())
                 .select([col for col in pav3.schema.VARIANT.keys() if col in col_names])
             )
@@ -354,11 +361,18 @@ def _integrate_sources(
     if pav_params.debug:
         print('Writing dup')
 
-    df = pl.concat(collect_list['dup'], how='diagonal')
+    df = pl.concat(derived_list['dup'], how='diagonal')
+
+    # Version IDs. Duplications are all derived variants, which take their ID from their coordinates, so duplications
+    # of the same reference region share one (e.g. a region copied twice by one complex variant, or by a complex
+    # variant and an insertion).
+    df = pav3.call.integrate.id_and_version(
+        df=df.with_columns(pl.col('filter').list.unique().list.sort()),
+        is_snv=False,
+    )
 
     (
         df
-        .with_columns(pl.col('filter').list.unique().sort())
         .sort(pav3.call.expr.sort_expr())
         .select([col for col in pav3.schema.VARIANT.keys() if col in df.collect_schema().names()])
         .sink_parquet(output['dup'])

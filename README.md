@@ -136,8 +136,9 @@ path is empty. For example, if some assemblies have an "unphased" haplotype and 
 Note that genotypes in the VCF file will have one allele for each haplotype defined for the assembly. For an assembly
 with haplotypes "h1", "h2", and "unphased", three genotype alleles will be possible (e.g. "1|0|." for a heterozygous
 variant present in "h1", not present in "h2", and uncallable in "unphased"). The order of genotypes is determined by
-the order of haplotype columns in the assembly table. When haplotypes carry different alleles at the same position, they
-are written as one multi-allelic record (e.g. "1|2").
+the order of haplotype columns in the assembly table. Config parameter "vcf_haplotypes" selects the haplotypes written
+and their order; variants carried only by haplotypes it leaves out are not written. When haplotypes carry different
+alleles at the same position, they are written as one multi-allelic record (e.g. "1|2").
 
 Each "hap_" column contains paths to input files in FASTA, FASTQ, GFA, or FOFN format. FOFN may contain paths to these
 same file types including other FOFNs (recursive FOFNs are not recommended, but PAV will detect cycles). Multiple files

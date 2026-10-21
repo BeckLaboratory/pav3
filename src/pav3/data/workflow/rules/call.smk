@@ -104,6 +104,8 @@ rule call_vcf:
                         df = df.with_columns(pl.lit('SNV').alias('vartype'))
 
                     # Initialize VCF fields (all but FORMAT and sample columns)
+                    init_stats = dict()
+
                     try:
                         df = pav3.vcf.init_vcf_fields(
                             df,
@@ -111,9 +113,20 @@ rule call_vcf:
                             use_sym=None,
                             vartype=vartype,
                             cpx_symbolic=pav_params.vcf_cpx_symbolic,
+                            log_stats=init_stats,
                         )
                     except Exception as e:
                         raise RuntimeError(f'Failed to initialize VCF fields for {vartype}: {e}') from e
+
+                    if init_stats.get('n_noop_cpx', 0) > 0:
+                        print(
+                            'WARNING: Skipped {n_noop_cpx:,} complex variant(s) with a sequence matching the reference '
+                            'bases it replaces: {label}{more}'.format(
+                                n_noop_cpx=init_stats['n_noop_cpx'],
+                                label=', '.join(init_stats['noop_cpx_label']),
+                                more=', ...' if init_stats['n_noop_cpx'] > len(init_stats['noop_cpx_label']) else '',
+                            )
+                        )
 
                     # Create a sample column
                     df = df.with_columns(
@@ -135,6 +148,10 @@ rule call_vcf:
                                 ),
                                 on='_index',
                                 how='left'
+                            )
+                            # Drop variants carried only by haplotypes left out of the VCF (config "vcf_haplotypes")
+                            .filter(
+                                pl.col(f'__vcf_field_gt_{wildcards.asm_name}').str.contains('1', literal=True)
                             )
                             .with_columns(
                                 pl.col(f'_vcf_sample_{wildcards.asm_name}').list.concat(f'__vcf_field_gt_{wildcards.asm_name}'),
@@ -170,8 +187,9 @@ rule call_vcf:
                     df_ref_info=df_ref_info,
                 )
 
-                # Combine records at the same site into multi-allelic records
-                combine_stats = dict()
+                # Combine records at the same site into multi-allelic records. Statistics take an extra pass over the
+                # records, so they are only collected for verbose output.
+                combine_stats = dict() if pav_params.verbose else None
 
                 df_records = pav3.vcf.combine_multiallelic(
                     pl.concat(
@@ -182,19 +200,21 @@ rule call_vcf:
                     log_stats=combine_stats,
                 )
 
-                print(
-                    'Multi-allelic records: '
-                    'Combined {n_combined_record:,} records into {n_combined_site:,} multi-allelic records '
-                    '({n_record_in:,} records in, {n_record_out:,} out); '
-                    'left {n_conflict_site:,} sites uncombined where a haplotype carries more than one record and '
-                    '{n_span_conflict_site:,} where an extended allele would overlap another variant on its haplotype; '
-                    '{n_overlap_record:,} records overlap a preceding record at a different position (not combined)'
-                    .format(**combine_stats)
-                )
+                if pav_params.verbose:
+                    print(
+                        'Multi-allelic records: '
+                        'Combined {n_combined_record:,} records into {n_combined_site:,} multi-allelic records '
+                        '({n_record_in:,} records in, {n_record_out:,} out); '
+                        'left {n_conflict_site:,} sites uncombined where a haplotype carries more than one record and '
+                        '{n_span_conflict_site:,} where an extended allele would overlap another variant on its '
+                        'haplotype; '
+                        '{n_overlap_record:,} records overlap a preceding record at a different position (not combined)'
+                        .format(**combine_stats)
+                    )
 
-                df_records = (
-                    pav3.vcf.reformat_vcf_table(df_records)
-                    .sort('#CHROM', 'POS', 'ID')
+                df_records = pav3.vcf.sort_vcf_table(
+                    pav3.vcf.reformat_vcf_table(df_records),
+                    df_ref_info,
                 )
 
                 # with open('deleme.vcf', 'wt') as out_file:
@@ -212,6 +232,7 @@ rule call_vcf:
                     df_records.sink_csv(
                         out_file,
                         separator='\t',
+                        quote_style='never',
                     )
 
             pysam.bcftools.index('--csi', output.vcf)

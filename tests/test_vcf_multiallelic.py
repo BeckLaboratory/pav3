@@ -222,10 +222,11 @@ def test_records_without_query_region():
         pl.Series('qry_id', ['q1', 'q2']),
         pl.Series('qry_pos', [None, None], dtype=pl.Int64),
         pl.Series('qry_end', [None, None], dtype=pl.Int64),
+        pl.Series('qry_rev', [False, True]),
     )
 
     rows, stats = _combine(vcf_record_table(standard_info_fields(df.lazy())).collect().to_dicts())
 
     assert len(rows) == 1
-    assert (rows[0]['ALT'], rows[0]['S'], rows[0]['INFO']) == ('A,ACC', '1|2', 'SVLEN=12,10')
+    assert (rows[0]['ALT'], rows[0]['S'], rows[0]['INFO']) == ('A,ACC', '1|2', 'QUERYREV=+,-')
     assert stats['n_combined_site'] == 1

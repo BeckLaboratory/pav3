@@ -28,6 +28,7 @@ __all__ = [
     'vcf_record_table',
     'combine_multiallelic',
     'reformat_vcf_table',
+    'sort_vcf_table',
     'resolve_hap_list',
 ]
 
@@ -35,6 +36,7 @@ __all__ = [
 import collections
 from collections.abc import Iterable
 import datetime
+import logging
 from pathlib import Path
 import threading
 from typing import Optional
@@ -47,6 +49,8 @@ import pysam
 
 from . import __version__
 from .const import FILTER_REASON
+
+logger = logging.getLogger(__name__)
 
 # Note on number fields (PAV does not use most of these)
 #
@@ -137,8 +141,9 @@ INFO_FIELDS = [
     # ),
     InfoField(
         'SVLEN', 'A', 'Integer',
-        'Variant length: inserted bases for INS and CPX (query-side), affected reference span for DEL, INV, '
-        'and DUP. Does not equal the POS/END reference span for INS or CPX.',
+        'Variant length for symbolic alleles: affected reference span for DEL, INV, and DUP, inserted bases '
+        '(query-side) for CPX. Does not equal the POS/END reference span for CPX. Not written for sequence-resolved '
+        'alleles, where REF and ALT give the length.',
     ),
     InfoField(
         'END', '1', 'Integer',
@@ -151,7 +156,8 @@ INFO_FIELDS = [
     ),
     InfoField(
         'SUBTYPE', 'A', 'String',
-        'Variant subtype. TD for a tandem duplication, or for CPX the type of the reference breakpoint (DEL or DUP)',
+        'Variant subtype. TD for an insertion of a tandem duplication. For CPX, the colon-separated segment types of '
+        'the reference trace (e.g. DEL, NML, INV, DUP).',
     ),
     InfoField(
         'CPX_REF_TRACE', 'A', 'String',
@@ -163,7 +169,8 @@ INFO_FIELDS = [
     ),
     InfoField(
         'QUERY', 'A', 'String',
-        'Query sequence position',
+        'Query region of the variant as \\"contig:start-end\\" (1-base, closed coordinates). Deletions report a 1 bp '
+        'region at the breakpoint. Taken from one haplotype for variants merged across haplotypes.',
     ),
     InfoField(
         'QUERYREV', 'A', 'Character',
@@ -171,7 +178,8 @@ INFO_FIELDS = [
     ),
     InfoField(
         'SEQ', 'A', 'String',
-        'Variant sequence.',
+        'Variant sequence, written for symbolic alleles only (REF and ALT carry it otherwise). For INV, the inverted '
+        'allele from the query. Not written for derived variants.',
     ),
     InfoField(
         'DUP', 'A', 'String',
@@ -223,6 +231,45 @@ VARTYPE_COMPAT = {
 _MAX_INVALID_REPORT = 10
 """Maximum number of variant IDs named when REF and ALT fail validation."""
 
+IUPAC_REDUCE = {
+    'R': 'A', 'Y': 'C', 'S': 'C', 'W': 'A', 'K': 'G', 'M': 'A', 'B': 'C', 'D': 'A', 'H': 'A', 'V': 'A',
+}
+"""IUPAC ambiguity codes mapped to the base VCF writes for them.
+
+VCF allows only A, C, G, T, and N in REF and ALT, and an ambiguous reference base is reduced to the base that is first
+alphabetically (e.g. R is written as A).
+"""
+
+INFO_ENCODE = {
+    '%': '%25', ',': '%2C', ';': '%3B', '=': '%3D', '\t': '%09', '\n': '%0A', '\r': '%0D',
+}
+"""Characters percent-encoded in INFO values.
+
+These have a special meaning in the INFO column, so a literal occurrence in a value (e.g. in a contig name) is encoded.
+"""
+
+
+def _concrete_bases(expr: pl.Expr) -> pl.Expr:
+    """Upper-case a sequence and reduce IUPAC ambiguity codes to a single base (see `IUPAC_REDUCE`).
+
+    REF and ALT receive the same reduction so the padding base they share stays identical.
+
+    :param expr: Sequence expression.
+
+    :returns: Expression with the sequence VCF writes in REF or ALT.
+    """
+    return expr.str.to_uppercase().str.replace_many(IUPAC_REDUCE)
+
+
+def _encode_info_value(expr: pl.Expr) -> pl.Expr:
+    """Percent-encode characters with a special meaning in INFO values (see `INFO_ENCODE`).
+
+    :param expr: String expression.
+
+    :returns: Encoded string expression.
+    """
+    return expr.str.replace_many(INFO_ENCODE)
+
 
 def alt_subtype_expr() -> pl.Expr:
     """Get an expression for the subtype carried by a symbolic ALT allele, or null where there is none.
@@ -263,6 +310,18 @@ sequence-resolved REF and ALT pair leaves nothing to disambiguate.
 """
 
 
+def _ref_info_order(
+    df_ref_info: pl.DataFrame,
+) -> pl.DataFrame:
+    """Order a reference information table by the order of sequences in the reference FASTA.
+
+    :param df_ref_info: Reference information table. Tables without an "order" column are returned as they are.
+
+    :returns: Reference information table in reference order.
+    """
+    return df_ref_info.sort('order') if 'order' in df_ref_info.columns else df_ref_info
+
+
 def get_headers(
     ref_filename: Optional[str | Path] = None,
     df_ref_info: Optional[pl.DataFrame] = None,
@@ -271,22 +330,23 @@ def get_headers(
     # Lead headers
     headers = [
         f'##fileformat=VCFv{VCF_VERSION}',
-        f'##filedate={datetime.datetime.now().strftime("%Y%m%d")}',
+        f'##fileDate={datetime.datetime.now().strftime("%Y%m%d")}',
         f'##source=PAVv{__version__}',
     ]
 
     # Reference
     if ref_filename is not None:
-        # Only filename, do not leak filesystem paths for security reasons
+        # Only the file name, do not leak filesystem paths for security reasons. Not written as a "file://" URI,
+        # which would read the file name as a host name.
         headers.append(
-            f'##reference=file://{Path(ref_filename).name}'
+            f'##reference={Path(ref_filename).name}'
         )
 
-    # Reference contigs
+    # Reference contigs in reference order (records are sorted in the same order, see `sort_vcf_table`)
     if df_ref_info is not None:
         headers.extend(
             f'##contig=<ID={chrom},length={length},md5={md5}>'
-            for chrom, length, md5 in df_ref_info.select(['chrom', 'len', 'md5']).iter_rows()
+            for chrom, length, md5 in _ref_info_order(df_ref_info).select(['chrom', 'len', 'md5']).iter_rows()
         )
 
     # ALT headers
@@ -318,6 +378,7 @@ def init_vcf_fields(
     use_sym: Optional[bool] = None,
     vartype: Optional[str] = None,
     cpx_symbolic: bool = False,
+    log_stats: Optional[dict] = None,
 ) -> pl.LazyFrame:
     """Initialize VCF fields.
 
@@ -330,6 +391,7 @@ def init_vcf_fields(
         are not in table `df` or `df` is empty.
     :param cpx_symbolic: Write complex variants as symbolic "<CPX>" records instead of sequence-resolved REF and ALT
         when `use_sym` is None.
+    :param log_stats: If not None, add statistics to this dictionary (see `vcf_fields_seq_cpx`).
     """
     seq_vartype_set = SEQ_VARTYPE | ({'CPX'} if not cpx_symbolic else set())
 
@@ -415,7 +477,7 @@ def init_vcf_fields(
 
         if 'CPX' in vartype_set:
             df_pos_ref_alt_list.append(
-                vcf_fields_seq_cpx(df.filter(pl.col('vartype') == 'CPX'), ref_fa)
+                vcf_fields_seq_cpx(df.filter(pl.col('vartype') == 'CPX'), ref_fa, log_stats=log_stats)
                 .select('_index', '_vcf_pos', '_vcf_ref', '_vcf_alt', '_is_sym_alt')
             )
 
@@ -453,7 +515,8 @@ def init_vcf_fields(
         )
     )
 
-    # Add POS, REF, and ALT
+    # Add POS, REF, and ALT. Records describing no change are dropped by the field functions above (e.g. a complex
+    # variant with a sequence matching the reference), so the join keeps only records with fields.
     return (
         df_vcf
         .drop(['_vcf_pos', '_vcf_ref', '_vcf_alt', '_is_sym_alt'], strict=False)
@@ -461,7 +524,7 @@ def init_vcf_fields(
             (
                 df_pos_ref_alt
                 .select('_index', '_vcf_pos', '_vcf_ref', '_vcf_alt', '_is_sym_alt')
-            ), on='_index', how='left'
+            ), on='_index', how='inner', maintain_order='left'
         )
     )
 
@@ -553,6 +616,10 @@ def vcf_fields_seq_insdel(
     # Set REF and ALT fields
     df_fields = (
         df_fields
+        .with_columns(
+            _concrete_bases(pl.col('_ref_base')),
+            _concrete_bases(pl.col('seq')),
+        )
         .with_columns(  # Set REF and ALT fields
             (
                 pl.when(pl.col('vartype') == 'INS')
@@ -609,6 +676,7 @@ def vcf_fields_seq_insdel(
 def vcf_fields_seq_cpx(
     df: pl.LazyFrame,
     ref_fa: Path | str,
+    log_stats: Optional[dict] = None,
 ) -> pl.LazyFrame:
     """Set POS, REF, and ALT VCF fields for sequence-resolved complex variants.
 
@@ -629,6 +697,8 @@ def vcf_fields_seq_cpx(
 
     :param df: Variant table with an "_index" column and "seq_ref_pos", "seq_ref_end", and "seq" columns.
     :param ref_fa: Reference FASTA filename.
+    :param log_stats: If not None, add statistics to this dictionary: "n_noop_cpx" (complex variants left out because
+        their sequence matches the reference bases they replace) and "noop_cpx_label" (labels of up to 10 of them).
 
     :returns: Variant table with VCF fields.
 
@@ -677,7 +747,10 @@ def vcf_fields_seq_cpx(
             .collect()  # Must collect while ref_file is open
         )
 
-    df_fields = df_fields.select(
+    df_fields = df_fields.with_columns(
+        _concrete_bases(pl.col('_vcf_ref')),
+        _concrete_bases(pl.col('seq')),
+    ).select(
         '_index',
         (
             pl.when(pl.col('_ref_base_left'))
@@ -694,8 +767,33 @@ def vcf_fields_seq_cpx(
             .alias('_vcf_alt')
         ),
         pl.lit(False).alias('_is_sym_alt'),
+        (pl.col('seq').str.len_chars() > 0).alias('_has_seq'),
         *label_col_list,
     )
+
+    # A complex variant whose sequence matches the reference bases it replaces describes no change. It is left out of
+    # the VCF with a warning rather than failing it. REF matching ALT without a sequence is still an error (see
+    # `_check_ref_alt`).
+    is_noop = pl.col('_has_seq').fill_null(False) & (pl.col('_vcf_ref') == pl.col('_vcf_alt')).fill_null(False)
+
+    if (n_noop := df_fields.select(is_noop.sum()).item()) > 0:
+        label_col = label_col_list[0] if label_col_list else '_index'
+        label_list = [
+            str(label) for label in df_fields.filter(is_noop)[label_col].head(_MAX_INVALID_REPORT).to_list()
+        ]
+
+        logger.warning(
+            'Skipping %d complex variant(s) with a sequence matching the reference bases it replaces: %s%s',
+            n_noop, ', '.join(label_list), ', ...' if n_noop > len(label_list) else ''
+        )
+
+        if log_stats is not None:
+            log_stats['n_noop_cpx'] = n_noop
+            log_stats['noop_cpx_label'] = label_list
+
+        df_fields = df_fields.filter(~is_noop)
+
+    df_fields = df_fields.drop('_has_seq')
 
     _check_ref_alt(df_fields, label_col_list[0] if label_col_list else '_index')
 
@@ -710,7 +808,8 @@ def _check_ref_alt(
 
     REF and ALT must both be non-empty, and a record with REF matching ALT describes no variant. Both occur when "seq"
     is null or empty for a variant type that needs it, which is a callset bug worth failing on rather than writing out
-    for a downstream tool to trip over.
+    for a downstream tool to trip over. REF and ALT are compared as written (upper case, see `_concrete_bases`), so a
+    difference in case does not hide a match.
 
     :param df_fields: Table with "_vcf_ref" and "_vcf_alt" columns.
     :param label_col: Column identifying records in error messages.
@@ -776,7 +875,7 @@ def vcf_fields_sym(
             .select(
                 '_index',
                 '_vcf_pos',
-                (
+                _concrete_bases(
                     pl.struct([pl.col('chrom'), pl.col('_vcf_pos')])
                     .map_elements(
                         lambda vals: ref_file.fetch(
@@ -785,8 +884,7 @@ def vcf_fields_sym(
                         return_dtype=pl.String
                     )
                     .cast(pl.String)
-                    .alias('_vcf_ref')
-                ),
+                ).alias('_vcf_ref'),
                 (
                     pl.concat_str(
                         pl.lit('<'),
@@ -837,10 +935,12 @@ def vcf_fields_snv(
         .select(
             '_index',
             (pl.col('pos') + 1).alias('_vcf_pos'),
-            pl.col('ref').alias('_vcf_ref'),
-            pl.col('alt').alias('_vcf_alt'),
+            _concrete_bases(pl.col('ref')).alias('_vcf_ref'),
+            _concrete_bases(pl.col('alt')).alias('_vcf_alt'),
             pl.lit(False).alias('_is_sym_alt'),
         )
+        # An SNV on an ambiguous reference base (e.g. R) matching the base it reduces to (A) describes no change
+        .filter(pl.col('_vcf_ref') != pl.col('_vcf_alt'))
     )
 
 
@@ -964,11 +1064,15 @@ def standard_info_fields(
     # SVTYPE is not emitted. VCF 4.5 deprecates it as redundant with ALT, and the type is recoverable from the
     # symbolic ALT (<INV>, <DUP>, <CPX>) or from the REF and ALT lengths for sequence-resolved INS, DEL, and SNV.
 
-    if len(cols & {'varlen', 'vartype'}) == 2:
+    if len(cols & {'varlen', '_is_sym_alt'}) == 2:
+        # Symbolic records only. VCF defines SVLEN for symbolic structural variant alleles and directs writers to use
+        # the missing value for all others, where REF and ALT give the length. Writing it for sequence-resolved
+        # records puts "." in multi-allelic records combining an SNV with an indel, which some tools fail on.
+        #
         # SVLEN is always positive. VCF 4.5 takes the absolute value of SVLEN and treats a negative value as
         # positive, so deletions are no longer negated.
         df = df.with_columns(
-            pl.when(pl.col('vartype') != 'SNV')
+            pl.when(pl.col('_is_sym_alt'))
             .then(
                 pl.col('_vcf_info').list.concat(
                     pl.concat_str(pl.lit('SVLEN='), 'varlen')
@@ -1014,7 +1118,9 @@ def standard_info_fields(
     if len(cols & {'varsubtype', 'vartype'}) == 2:
         # Subtypes the ALT allele already carries (duplications) are not repeated here.
         df = df.with_columns(
-            pl.when(pl.col('varsubtype').is_not_null() & alt_subtype_expr().is_null())
+            pl.when(
+                (pl.col('varsubtype').str.len_chars() > 0).fill_null(False) & alt_subtype_expr().is_null()
+            )
             .then(
                 pl.col('_vcf_info').list.concat(
                     pl.concat_str(pl.lit('SUBTYPE='), 'varsubtype')
@@ -1026,12 +1132,12 @@ def standard_info_fields(
 
     if 'trace_ref' in cols:
         df = df.with_columns(
-            pl.when(pl.col('trace_ref').is_not_null())
+            pl.when((pl.col('trace_ref').str.len_chars() > 0).fill_null(False))
             .then(
                 pl.col('_vcf_info').list.concat(
                     pl.concat_str(
                         pl.lit('CPX_REF_TRACE='),
-                        pl.col('trace_ref').str.replace_all(',', '')
+                        _encode_info_value(pl.col('trace_ref').str.replace_all(',', ''))
                     )
                 )
             )
@@ -1041,12 +1147,12 @@ def standard_info_fields(
 
     if 'trace_qry' in cols:
         df = df.with_columns(
-            pl.when(pl.col('trace_qry').is_not_null())
+            pl.when((pl.col('trace_qry').str.len_chars() > 0).fill_null(False))
             .then(
                 pl.col('_vcf_info').list.concat(
                     pl.concat_str(
                         pl.lit('CPX_QRY_TRACE='),
-                        pl.col('trace_qry').str.replace_all(',', '')
+                        _encode_info_value(pl.col('trace_qry').str.replace_all(',', ''))
                     )
                 )
             )
@@ -1063,7 +1169,7 @@ def standard_info_fields(
                 pl.col('_vcf_info').list.concat(
                     pl.concat_str(
                         pl.lit('QUERY='),
-                        pl.col('qry_id'),
+                        _encode_info_value(pl.col('qry_id')),
                         pl.lit(':'),
                         pl.col('qry_pos') + 1,
                         pl.lit('-'),
@@ -1118,7 +1224,7 @@ def standard_info_fields(
                         pl.lit('DUP='),
                         pl.col('dup').list.eval(
                             pl.concat_str(
-                                pl.element().struct.field('chrom'),
+                                _encode_info_value(pl.element().struct.field('chrom')),
                                 pl.lit(':'),
                                 (pl.element().struct.field('pos') + 1).cast(pl.String),
                                 pl.lit('-'),
@@ -1614,14 +1720,52 @@ def reformat_vcf_table(
             pl.lit('.').alias('QUAL'),
             pl.col('_vcf_filter').alias('FILTER'),
             (
-                pl.col('_vcf_info')
-                .list.eval(  # Replacing semicolons should not be needed, but don't break VCFs if they are present
-                    pl.element().str.replace_all(';', ':')
+                pl.when(pl.col('_vcf_info').list.len() > 0)
+                .then(
+                    pl.col('_vcf_info')
+                    .list.eval(  # Values are encoded where they are built, but don't break VCFs if one is missed
+                        pl.element().str.replace_all(';', '%3B', literal=True)
+                    )
+                    .list.join(';')
                 )
-            ).list.join(';').alias('INFO'),
+                .otherwise(pl.lit('.'))
+            ).alias('INFO'),
             pl.col('_vcf_format').list.join(':').alias('FORMAT'),
             *sample_col_exprs,
         )
+    )
+
+
+def sort_vcf_table(
+    df: pl.LazyFrame,
+    df_ref_info: pl.DataFrame,
+) -> pl.LazyFrame:
+    """Sort formatted VCF records in reference order.
+
+    Chromosomes are ordered as they are in the reference FASTA, which is the order of "##contig" header lines (see
+    `get_headers`). VCF only requires the records for each chromosome to be contiguous, but tools validating records
+    against the sequence dictionary (e.g. Picard) reject other orders. Records are sorted by position within each
+    chromosome and by ID at the same position.
+
+    :param df: Formatted VCF records (see `reformat_vcf_table`).
+    :param df_ref_info: Reference information table with a "chrom" column and optionally an "order" column.
+
+    :returns: Sorted VCF records.
+    """
+    chrom_order = (
+        _ref_info_order(df_ref_info)
+        .select(
+            pl.col('chrom').alias('#CHROM'),
+            pl.int_range(pl.len(), dtype=pl.Int64).alias('_chrom_order'),
+        )
+        .lazy()
+    )
+
+    return (
+        df
+        .join(chrom_order, on='#CHROM', how='left', maintain_order='left')
+        .sort('_chrom_order', '#CHROM', 'POS', 'ID', nulls_last=True)
+        .drop('_chrom_order')
     )
 
 

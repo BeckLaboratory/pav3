@@ -5,7 +5,10 @@ import polars as pl
 import pysam
 import pytest
 
-from pav3.vcf import get_headers, standard_info_fields, vcf_fields_sym
+from pav3.vcf import (
+    get_headers, reformat_vcf_table, sort_vcf_table, standard_info_fields, vcf_fields_seq_insdel, vcf_fields_snv,
+    vcf_fields_sym,
+)
 
 
 REF_SEQ = 'ACGT' * 250
@@ -150,3 +153,102 @@ def test_null_info_field_dropped():
 
     assert None not in info
     assert not any(field.startswith('HOMLEN=') for field in info)
+
+
+@pytest.mark.parametrize('vartype', ['DEL', 'DUP', 'INV'])
+def test_svlen_on_symbolic(vartype):
+    """SVLEN gives the length of symbolic alleles."""
+    assert 'SVLEN=10' in _info_for(vartype, is_sym=True).split(';')
+
+
+@pytest.mark.parametrize('vartype', ['DEL', 'INS', 'CPX'])
+def test_svlen_omitted_for_sequence_resolved(vartype):
+    """REF and ALT give the length of sequence-resolved alleles, for which VCF directs writers to omit SVLEN."""
+    assert 'SVLEN' not in _info_for(vartype, is_sym=False)
+
+
+def test_empty_subtype_and_traces_not_written():
+    """Empty strings are left out rather than written as a key with no value."""
+    info = _info_list(varsubtype='', trace_ref='', trace_qry='')
+
+    assert not any(field.split('=')[0] in {'SUBTYPE', 'CPX_REF_TRACE', 'CPX_QRY_TRACE'} for field in info)
+
+
+def test_info_values_percent_encoded():
+    """Characters with a special meaning in INFO are percent-encoded in names embedded in values."""
+    assert 'QUERY=q%3B1%3Da%2Cb%25:6-15' in _info_list(qry_id='q;1=a,b%', qry_pos=5, qry_end=15)
+
+
+def test_header_lead_lines():
+    """The file date uses the conventional "fileDate" key, and the reference is a file name, not a malformed URI."""
+    headers = get_headers(ref_filename='/path/to/hs1.fa.gz')
+
+    assert any(line.startswith('##fileDate=') for line in headers)
+    assert '##reference=hs1.fa.gz' in headers
+
+
+def _ref_info() -> pl.DataFrame:
+    """Get reference information with sequences in FASTA order chr1, chr2, chr10 (stored out of order)."""
+    return pl.DataFrame({
+        'chrom': ['chr10', 'chr1', 'chr2'],
+        'len': [300, 100, 200],
+        'md5': ['c', 'a', 'b'],
+        'order': [2, 0, 1],
+    })
+
+
+def test_contig_headers_in_reference_order():
+    """Contig lines follow the reference FASTA order."""
+    contigs = [line for line in get_headers(df_ref_info=_ref_info()) if line.startswith('##contig')]
+
+    assert [line.split(',')[0] for line in contigs] == ['##contig=<ID=chr1', '##contig=<ID=chr2', '##contig=<ID=chr10']
+
+
+def test_records_sorted_in_reference_order():
+    """Records follow the contig header order, not string order (chr10 before chr2)."""
+    df = pl.LazyFrame({
+        '#CHROM': ['chr10', 'chr2', 'chr1', 'chr2'],
+        'POS': [5, 9, 7, 3],
+        'ID': ['d', 'c', 'a', 'b'],
+    })
+
+    out = sort_vcf_table(df, _ref_info()).collect()
+
+    assert out['ID'].to_list() == ['a', 'b', 'c', 'd']
+    assert out.columns == ['#CHROM', 'POS', 'ID']
+
+
+def test_empty_info_is_missing_value():
+    """A record with no INFO fields writes the missing value."""
+    df = pl.LazyFrame({
+        '_vcf_chrom': ['chr1'], '_vcf_pos': [10], '_vcf_id': ['v1'], '_vcf_ref': ['A'], '_vcf_alt': ['C'],
+        '_vcf_filter': ['PASS'], '_vcf_info': [[]], '_vcf_format': [['GT']], '_vcf_sample_S': [['0|1']],
+    }, schema_overrides={'_vcf_info': pl.List(pl.String)})
+
+    assert reformat_vcf_table(df).collect()['INFO'].to_list() == ['.']
+
+
+def test_snv_iupac_reference_reduced():
+    """An ambiguous reference base is written as the base first alphabetically, and an SNV it matches is dropped."""
+    df = pl.LazyFrame({
+        'pos': [10, 20, 30], 'ref': ['R', 'r', 'y'], 'alt': ['G', 'A', 'g'],
+    }).with_row_index('_index')
+
+    out = vcf_fields_snv(df).collect()
+
+    assert out.select('_vcf_ref', '_vcf_alt').rows() == [('A', 'G'), ('C', 'G')]
+
+
+def test_insdel_iupac_and_soft_masked_reference(tmp_path):
+    """Soft-masked and ambiguous reference bases are upper-cased and reduced in REF and in the padding base of ALT."""
+    path = tmp_path / 'ref_iupac.fa'
+    path.write_text('>chr1\nacgtRYacgtacgtacgt\n')
+    pysam.faidx(str(path))
+
+    df = pl.LazyFrame({
+        'chrom': ['chr1'], 'pos': [5], 'end': [6], 'vartype': ['DEL'], 'seq': ['y'], 'id': ['del1'],
+    }).with_row_index('_index')
+
+    row = vcf_fields_seq_insdel(df, path).collect().row(0, named=True)
+
+    assert (row['_vcf_pos'], row['_vcf_ref'], row['_vcf_alt']) == (5, 'AC', 'A')

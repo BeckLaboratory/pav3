@@ -185,3 +185,22 @@ def test_symbolic_ref_is_padding_base(ref_fa, pos):
 
     assert row['_vcf_pos'] == max(pos, 1)
     assert row['_vcf_ref'] == REF_SEQ[max(pos, 1) - 1]
+
+
+def test_cpx_matching_reference_is_dropped(ref_fa, caplog):
+    """A complex variant whose sequence matches the bases it replaces (in any case) is left out with a warning."""
+    df = _cpx_frame(100, 150, REF_SEQ[100:150].lower())
+
+    with caplog.at_level('WARNING', logger='pav3.vcf'):
+        assert vcf_fields_seq_cpx(df, ref_fa).collect().height == 0
+        stats = {}
+        assert init_vcf_fields(df, ref_fa=ref_fa, vartype='cpx', log_stats=stats).collect().height == 0
+
+    assert 'cpx1' in caplog.text
+    assert stats == {'n_noop_cpx': 1, 'noop_cpx_label': ['cpx1']}
+
+
+def test_cpx_without_sequence_matching_reference_raises(ref_fa):
+    """REF matching ALT without a sequence is a callset bug, not a variant to skip."""
+    with pytest.raises(ValueError, match='Invalid REF or ALT'):
+        vcf_fields_seq_cpx(_cpx_frame(100, 100, ''), ref_fa).collect()

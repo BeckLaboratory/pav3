@@ -48,9 +48,22 @@ https://common-changelog.org/
 - VCF INFO headers declare an accurate `Number`. `END` is `Number=1` and `SVLEN` is `Number=A`, matching the
   reserved keys; all others are `Number=A`. All were previously `Number=.`.
 - VCF `INFO/SVLEN` is always positive. Deletions are no longer negated.
+- VCF `INFO/SVLEN` is written only for symbolic ALT alleles. VCF defines it for symbolic structural variant alleles
+  and directs writers to use the missing value for all others, where REF and ALT give the length. Multi-allelic
+  records combining an SNV with an indel carried `SVLEN=.,N`, which crashed Truvari, and htslib 1.22 sized
+  sequence-resolved records by SVLEN.
 - VCF INFO values no longer contain literal commas, which VCF reserves as the value delimiter. `DUP` separates
   regions with `/`, and `CPX_REF_TRACE` and `CPX_QRY_TRACE` drop thousands separators. The `trace_ref` and
   `trace_qry` variant table columns are unchanged.
+- Contig names embedded in VCF INFO values (`QUERY`, `DUP`, and the complex variant traces) are percent-encoded
+  where they contain `;`, `=`, `,`, `%`, a tab, or a line break, as VCF requires.
+- VCF records are sorted in reference order, the order of the `##contig` header lines, rather than by chromosome
+  name (`chr1`, `chr10`, `chr2`). Tools validating records against the sequence dictionary (e.g. Picard) reject
+  other orders.
+- VCF REF and ALT reduce IUPAC ambiguity codes to the base that is first alphabetically (e.g. `R` to `A`), as VCF
+  requires.
+- The VCF header writes `##fileDate` instead of `##filedate`, and `##reference` as the reference file name instead
+  of a `file://` URI, which read the file name as a host name.
 - VCF `INFO/END` and `INFO/SEQ` are written only for symbolic ALT alleles, where REF and ALT do not carry the
   span or the sequence. `SEQ` is upper-cased to match REF and ALT, and is not written for derived variants, where
   it does not describe the alternate allele.
@@ -59,6 +72,7 @@ https://common-changelog.org/
   homology from reference breakpoints for `DEL` and `DUP` and query breakpoints for `INS` and `CPX`.
 - Variant tracks report `.` for strand. The strand column was never set, and a variant carries no orientation of
   the reference feature it is drawn on.
+- The multi-allelic record summary is printed only with `verbose`, and its statistics are not computed otherwise.
 
 ### Added
 - YAML configuration file `pav.yaml` (or `pav.yml`), accepting the same parameters as `pav.json`. PAV reads
@@ -128,6 +142,27 @@ https://common-changelog.org/
 - Track columns typed as numbers in the AutoSQL table are now checked before the BED is written, naming the
   column rather than failing inside `bedToBigBed`. UCSC itemRgb columns, which are declared `uint` but hold
   `R,G,B` strings, are exempt.
+- Duplication filters were assigned to the wrong records. The duplication table sorted its filter column on its
+  own rather than the codes within each record, moving filters such as `LCALIGN` and `MAPQ` between duplications.
+- Duplication IDs were not unique. Derived duplications of the same reference region (e.g. a region copied twice by
+  one complex variant) shared one ID, because the duplication table was written without the ID versioning applied
+  to the other tables. Repeated IDs now take a version suffix (`.1`, `.2`), and passing variants keep the
+  unversioned ID.
+- Variant IDs changed after other records were linked to them. IDs were versioned as each call source was
+  integrated, when the `derived`, `discord`, and `inner` columns and the complex variant segment and reference trace
+  tables link to them, then versioned again when the table was written, which reassigned versions among variants
+  sharing an ID. IDs are now versioned once. Variants derived from other variants are versioned last, so they never
+  take an ID another record links to. A passing variant takes a versioned ID when a variant integrated before it has
+  the same ID (e.g. an alignment-truncating deletion filtered by `LCALIGN` keeps its ID over a passing deletion at
+  the same site).
+- Complex variants whose sequence matches the reference bases they replace were written with REF equal to ALT when
+  the reference was soft-masked, because the check compared case. They are left out of the VCF with a warning.
+- VCF `INFO/SUBTYPE`, `INFO/CPX_REF_TRACE`, and `INFO/CPX_QRY_TRACE` were written with an empty value for complex
+  variants with an empty reference or query trace.
+- VCF records were written with CSV quoting: an empty INFO column was written as `""`, and a value containing a
+  quote was wrapped in quotes. An empty INFO column is now `.`.
+- With `vcf_haplotypes`, variants carried only by haplotypes left out of the VCF were written with no haplotype
+  carrying the ALT allele (e.g. `0|0`).
 
 ## 3.0.0.dev26 - 2026-08-28
 

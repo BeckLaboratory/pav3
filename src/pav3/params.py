@@ -476,7 +476,7 @@ _CONFIG_PARAM_LIST: list[_ConfigParamElement] = [
     ),
     _ConfigParamElement(
         'vcf_haplotypes', 'str', None,
-        description='A comma-separated list of haplotype names to include in the VCF where genotypes are given in this'
+        description='A comma-separated list of haplotype names to include in the VCF where genotypes are given in this '
                     'order. If not defined, then all haplotypes are written in the order they are defined.'
     ),
     _ConfigParamElement(

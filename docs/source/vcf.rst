@@ -8,13 +8,18 @@ PAV targets VCF 4.5. Insertions, deletions, SNVs, and complex variants are writt
 sequence-resolved ``REF`` and ``ALT``; inversions and duplications are written with symbolic alleles.
 Config parameter ``vcf_cpx_symbolic`` writes complex variants with symbolic ``<CPX>`` alleles instead.
 
+Records are sorted in reference order: chromosomes in the order of the ``##contig`` header lines,
+which is the order of sequences in the reference FASTA, then by position. ``REF`` and ``ALT`` are
+upper case, and IUPAC ambiguity codes are reduced to the base that is first alphabetically (e.g. ``R``
+is written as ``A``), as VCF requires. A complex variant whose sequence matches the reference bases it
+replaces describes no change and is left out of the VCF with a warning.
+
 Multi-allelic records
 ---------------------
 
-Each haplotype carries at most one allele at a site. When haplotypes carry different alleles starting
-at the same position, PAV writes one record with an ``ALT`` per distinct allele (e.g. ``1|2``) rather
-than one record per allele (``1|0`` and ``0|1``), which comparison tools and ``bcftools consensus`` do
-not reliably resolve. ``REF`` is the longest ``REF`` of the combined alleles, and shorter alleles are
+When haplotypes carry different alleles starting at the same position, PAV writes one record with an
+``ALT`` per distinct allele (e.g. ``1|2``) rather than one record per allele (``1|0`` and ``0|1``),
+which comparison tools and ``bcftools consensus`` do not reliably resolve. ``REF`` is the longest ``REF`` of the combined alleles, and shorter alleles are
 extended with the reference bases it adds. ``ID`` lists the variant IDs separated by semicolons, and
 per-allele INFO fields have one value per ``ALT``.
 
@@ -59,9 +64,11 @@ Lengths and coordinates
 ``INFO/SVLEN`` and the reference span implied by ``POS`` and ``INFO/END`` measure different
 quantities, and for some variant types they do not agree. Neither is derived from the other.
 
-``INFO/END`` and ``INFO/SEQ`` are written only for symbolic ALT alleles. A sequence-resolved ``REF``
-and ``ALT`` pair already gives both the span and the sequence, and VCF 4.4 and later treat ``END`` as
-a computed field. The table below describes the quantities wherever they are written.
+``INFO/SVLEN``, ``INFO/END``, and ``INFO/SEQ`` are written only for symbolic ALT alleles (``INV``,
+``DUP``, and ``CPX`` with ``vcf_cpx_symbolic``). A sequence-resolved ``REF`` and ``ALT`` pair already
+gives the length, the span, and the sequence. VCF defines ``SVLEN`` for symbolic structural variant
+alleles and directs writers to use the missing value for all others, and VCF 4.4 and later treat
+``END`` as a computed field. The table below describes the quantities wherever they are written.
 
 .. list-table::
    :header-rows: 1
@@ -90,13 +97,13 @@ a computed field. The table below describes the quantities wherever they are wri
    * - ``DUP``
      - Duplicated bases
      - Same as ``SVLEN``
-     - Duplicated bases (query)
+     - Not written; duplications are derived variants (``FILTER`` ``DERIVED``)
    * - ``CPX``
-     - Inserted bases (query)
+     - Inserted bases (query, symbolic only)
      - Reference breakpoint span (symbolic only)
      - Inserted bases (query, symbolic only)
 
-Two cases deserve attention:
+Three cases deserve attention:
 
 ``INV``
    ``SVLEN`` and ``END`` both give the inverted reference span, but ``INFO/SEQ`` holds the inverted
@@ -119,9 +126,8 @@ Two cases deserve attention:
 
 Tandem duplications
    Bases duplicated at a variant site fall inside both flanking alignments, so they are absent from
-   the query region between them. They are counted by ``SVLEN`` and are written into ``ALT`` and
-   ``INFO/SEQ`` by reading the reference over the duplicated region, the same region reported by
-   ``INFO/DUP``. Sequence divergence between the two copies is therefore not represented. An
+   the query region between them. They are written into ``ALT`` by reading the reference over the
+   duplicated region, the same region reported by ``INFO/DUP``. Sequence divergence between the two copies is therefore not represented. An
    insertion whose inserted bases are entirely a tandem duplication would otherwise carry no
    sequence at all.
 
@@ -179,8 +185,10 @@ Reserved characters
 -------------------
 
 VCF reserves the comma as the delimiter between values within an INFO field, and forbids literal
-semicolons and equals signs. PAV writes no INFO value containing any of these. Fields holding more
-than one value separate them with ``/``: ``INFO/DUP`` writes its regions that way.
+semicolons and equals signs. Contig names embedded in INFO values (``INFO/QUERY``, ``INFO/DUP``, and
+the complex variant traces) are percent-encoded where they contain one of these characters, a percent
+sign, a tab, or a line break (e.g. ``;`` is written as ``%3B``). Fields holding more than one value
+separate them with ``/``: ``INFO/DUP`` writes its regions that way.
 
 ``INFO/CPX_REF_TRACE`` and ``INFO/CPX_QRY_TRACE`` report segment lengths without thousands
 separators. The ``trace_ref`` and ``trace_qry`` columns of the variant tables keep the separators
