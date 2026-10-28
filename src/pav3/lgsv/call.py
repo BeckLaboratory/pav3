@@ -222,7 +222,9 @@ def find_optimal_svs(
 
     :returns: A list of alignment-truncating variants along the optimal path through aligned fragments.
     """
-    # Initialize Bellman-Ford
+    # Initialize longest path through a DAG: DAG-SHORTEST-PATHS maximizing score (critical path), see Cormen et al.,
+    # Introduction to Algorithms, 4th ed., section 22.2. Edges only go forward in query order (a topological order), so
+    # one pass relaxing each edge is sufficient.
     top_score = np.full(df_align.height, -np.inf)   # Score, top-sorted graph
     top_tb = np.full(df_align.height, -2)           # Traceback (points to parent node with the best score)
 
@@ -238,7 +240,7 @@ def find_optimal_svs(
     for start_index in range(df_align.height - 1):  # Implicit edges to next node
         node_link[start_index].add(start_index + 1)
 
-    # Update score by Bellman-Ford
+    # Update scores by relaxing each edge once in topological order
     for start_index in range(df_align.height):
         base_score = top_score[start_index]
 
