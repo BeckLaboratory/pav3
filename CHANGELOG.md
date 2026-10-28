@@ -22,39 +22,48 @@ https://common-changelog.org/
 
 -->
 
-## 3.0.0.dev27
+## 3.0.0 - 2026-10-28
+
+_First stable release of PAV 3, listing changes since the last prerelease (3.0.0.dev26)._
 
 ### Changed
-- Low-confidence alignment filtering (`LCALIGN`) is off by default (config parameter `lc_model` defaults to
-  `none`). It removed correct calls in highly diverged regions such as HLA class II. Set `lc_model` to `default` for
-  the previous behavior.
-- Alignment records with MAPQ below 20 are filtered by default (new config parameter `min_mapq`). Their variants
-  are filtered with `MAPQ`, and their regions are not callable. Low-MAPQ fragments in satellites and repeats
-  produced false calls that broke haplotype reconstruction from the VCF.
-- Haplotype merge defaults (`pav3.const.DEFAULT_MERGE_PARAMS`) for `insdel` and `cpx` merge only matching alleles:
-  same position and end, size and sequence identity of at least 0.998 for insertions and deletions, and 0.98 for
-  complex variants (with segment overlap 0.8). The previous population-style tolerances merged different alleles
-  from the two haplotypes into one homozygous record and moved variants up to 200 bp to the other haplotype's
-  position. Override with the new `merge_params` config parameter.
-- VCF records at the same position are combined into multi-allelic records when they have the same filter and no
-  haplotype carries more than one of them, so different alleles on two haplotypes are written as one record (e.g.
-  `1|2`) instead of two overlapping records (`1|0` and `0|1`).
-- Complex variants are written as sequence-resolved REF and ALT alleles by default. The record replaces the
-  reference bases skipped by the variant with the variant sequence, so applying it to the reference (e.g.
-  `bcftools consensus`) reconstructs the haplotype. Set `vcf_cpx_symbolic` to write `<CPX>` alleles.
+- **Breaking:** Low-confidence alignment filtering (`LCALIGN`) is off by default (config parameter `lc_model`
+  defaults to `none`). It removed correct calls in highly diverged regions such as HLA class II. Set `lc_model` to
+  `default` for the previous behavior.
+- **Breaking:** Alignment records with MAPQ below 20 are filtered by default (new config parameter `min_mapq`).
+  Their variants are filtered with `MAPQ`, and their regions are not callable. Low-MAPQ fragments in satellites and
+  repeats produced false calls that broke haplotype reconstruction from the VCF.
+- **Breaking:** Haplotype merge defaults (`pav3.const.DEFAULT_MERGE_PARAMS`) for `insdel` and `cpx` merge only
+  matching alleles: same position and end, size and sequence identity of at least 0.998 for insertions and
+  deletions, and 0.98 for complex variants (with segment overlap 0.8). The previous population-style tolerances
+  merged different alleles from the two haplotypes into one homozygous record and moved variants up to 200 bp to the
+  other haplotype's position. Override with the new `merge_params` config parameter.
+- **Breaking:** VCF records at the same position are combined into multi-allelic records when they have the same
+  filter and no haplotype carries more than one of them, so different alleles on two haplotypes are written as one
+  record (e.g. `1|2`) instead of two overlapping records (`1|0` and `0|1`).
+- **Breaking:** Complex variants are written as sequence-resolved REF and ALT alleles by default. The record
+  replaces the reference bases skipped by the variant with the variant sequence, so applying it to the reference
+  (e.g. `bcftools consensus`) reconstructs the haplotype. Set `vcf_cpx_symbolic` to write `<CPX>` alleles.
+- **Breaking:** VCF `INFO/SVLEN` is always positive. Deletions are no longer negated.
+- **Breaking:** VCF `INFO/SVLEN` is written only for symbolic ALT alleles. VCF defines it for symbolic structural
+  variant alleles and directs writers to use the missing value for all others, where REF and ALT give the length.
+  Multi-allelic records combining an SNV with an indel carried `SVLEN=.,N`, which crashed Truvari, and htslib 1.22
+  sized sequence-resolved records by SVLEN.
+- **Breaking:** VCF `INFO/END` and `INFO/SEQ` are written only for symbolic ALT alleles, where REF and ALT do not
+  carry the span or the sequence. `SEQ` is upper-cased to match REF and ALT, and is not written for derived
+  variants, where it does not describe the alternate allele.
+- **Breaking:** VCF INFO values no longer contain literal commas, which VCF reserves as the value delimiter. `DUP`
+  separates regions with `/`, and `CPX_REF_TRACE` and `CPX_QRY_TRACE` drop thousands separators. The `trace_ref`
+  and `trace_qry` variant table columns are unchanged.
+- **Breaking:** Tandem and inverted duplications are written as `<DUP:TANDEM>` and `<DUP:INVDUP>` rather than
+  `INFO/SUBTYPE`.
+- **Breaking:** Replaced VCF `INFO/HOMREF` and `INFO/HOMQRY` with the reserved `INFO/HOMLEN`, summing upstream and
+  downstream homology from reference breakpoints for `DEL` and `DUP` and query breakpoints for `INS` and `CPX`.
+- Tighter compliance with VCF 4.5.
 - Complex variant tables have new columns `seq_ref_pos` and `seq_ref_end`, the reference region the variant
   sequence replaces.
-- Tighter compliance with VCF 4.5.
 - VCF INFO headers declare an accurate `Number`. `END` is `Number=1` and `SVLEN` is `Number=A`, matching the
   reserved keys; all others are `Number=A`. All were previously `Number=.`.
-- VCF `INFO/SVLEN` is always positive. Deletions are no longer negated.
-- VCF `INFO/SVLEN` is written only for symbolic ALT alleles. VCF defines it for symbolic structural variant alleles
-  and directs writers to use the missing value for all others, where REF and ALT give the length. Multi-allelic
-  records combining an SNV with an indel carried `SVLEN=.,N`, which crashed Truvari, and htslib 1.22 sized
-  sequence-resolved records by SVLEN.
-- VCF INFO values no longer contain literal commas, which VCF reserves as the value delimiter. `DUP` separates
-  regions with `/`, and `CPX_REF_TRACE` and `CPX_QRY_TRACE` drop thousands separators. The `trace_ref` and
-  `trace_qry` variant table columns are unchanged.
 - Contig names embedded in VCF INFO values (`QUERY`, `DUP`, and the complex variant traces) are percent-encoded
   where they contain `;`, `=`, `,`, `%`, a tab, or a line break, as VCF requires.
 - VCF records are sorted in reference order, the order of the `##contig` header lines, rather than by chromosome
@@ -64,15 +73,11 @@ https://common-changelog.org/
   requires.
 - The VCF header writes `##fileDate` instead of `##filedate`, and `##reference` as the reference file name instead
   of a `file://` URI, which read the file name as a host name.
-- VCF `INFO/END` and `INFO/SEQ` are written only for symbolic ALT alleles, where REF and ALT do not carry the
-  span or the sequence. `SEQ` is upper-cased to match REF and ALT, and is not written for derived variants, where
-  it does not describe the alternate allele.
-- Tandem and inverted duplications are written as `<DUP:TANDEM>` and `<DUP:INVDUP>` rather than `INFO/SUBTYPE`.
-- Replaced VCF `INFO/HOMREF` and `INFO/HOMQRY` with the reserved `INFO/HOMLEN`, summing upstream and downstream
-  homology from reference breakpoints for `DEL` and `DUP` and query breakpoints for `INS` and `CPX`.
 - Variant tracks report `.` for strand. The strand column was never set, and a variant carries no orientation of
   the reference feature it is drawn on.
 - The multi-allelic record summary is printed only with `verbose`, and its statistics are not computed otherwise.
+- The README cites the PAV 3 preprint (https://doi.org/10.1101/2024.12.19.629504) and is reorganized into install,
+  configuration, run, and output sections.
 
 ### Added
 - YAML configuration file `pav.yaml` (or `pav.yml`), accepting the same parameters as `pav.json`. PAV reads
@@ -91,11 +96,12 @@ https://common-changelog.org/
   `true` takes a snapshot every 30 seconds, a positive integer sets the seconds between snapshots, and `false` or `0`
   (default) disables it. The table is rewritten after every snapshot, so a job killed for exceeding its memory keeps
   its samples. Adjunct rules (tracks, alignment depth) are not logged.
+- Runtime dependencies PyYAML, for `pav.yaml`, and psutil, for `perf_log`.
 
 ### Removed
-- Snakemake `benchmark` directives (`log/benchmark/`), replaced by `perf_log`.
-- VCF `INFO/SVTYPE`. VCF 4.5 deprecates it as redundant with ALT, which carries the type in the symbolic allele
-  or in the REF and ALT lengths.
+- **Breaking:** Snakemake `benchmark` directives (`log/benchmark/`), replaced by `perf_log`.
+- **Breaking:** VCF `INFO/SVTYPE`. VCF 4.5 deprecates it as redundant with ALT, which carries the type in the
+  symbolic allele or in the REF and ALT lengths.
 - The `##FILTER=<ID=PASS>` header. VCF defines PASS implicitly.
 
 ### Fixed
@@ -299,9 +305,25 @@ https://common-changelog.org/
 ### Changed
 - Updated Agglovar version.
 
-## 3.0.0.dev10 - 2025-11-06
+## 3.0.0.dev10 - 2025-11-26
+
+### Added
+- Complex variants in the haplotype merge (`results/{asm_name}/call/call_cpx.parquet`).
 
 ### Changed
+- Replaced the `polars-u64-idx` dependency with `polars` 1.35.2 or newer.
+
+## 3.0.0.dev9 - 2025-11-20
+
+### Added
+- Haplotype merge combining the per-haplotype call tables of an assembly into
+  `results/{asm_name}/call/call_{vartype}.parquet` for INS/DEL, INV, and SNV, merging passing and filtered variants
+  separately. Merge parameters are in `pav3.const.DEFAULT_MERGE_PARAMS`.
+
+### Changed
+- Large insertion and tandem duplication tables replace the `ref_templ` column with `dup`, the duplicated reference
+  loci. Complex variant tables add `seg`, the aligned segments between the anchors, and `dup`.
+- Large variants are sorted by reference position before they are resolved, speeding sequence and homology lookups.
 - Updated Agglovar version.
 
 ## 3.0.0.dev8 - 2025-11-06
