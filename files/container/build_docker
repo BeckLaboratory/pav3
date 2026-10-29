@@ -12,7 +12,7 @@
 #   -d, --dir DIR          PAV directory (resolved relative to CWD). Overrides
 #                          the location auto-detected from this script.
 #   -p, --pav-version VER  PAV version to build (e.g. 3.0.0.dev22). Defaults to
-#                          the newest wheel in <PAV_DIR>/dist.
+#                          __version__ in <PAV_DIR>/src/pav3/__init__.py.
 #   -f, --force            Rebuild even if an image for the version already exists.
 #   -L, --nolatest         Do not also tag the runtime image as "latest".
 #   -n, --pretend          Print the docker commands without running them.
@@ -120,30 +120,20 @@ DIST_DIR="${PAV_DIR}/dist"
 ### Determine the PAV version ###
 
 if [[ -z "$PAV_VERSION" ]]; then
-    # Auto-detect the newest wheel.
-    shopt -s nullglob
-    wheels=("${DIST_DIR}"/pav3-*.whl)
-    shopt -u nullglob
-
-    [[ ${#wheels[@]} -gt 0 ]] \
-        || err "No PAV wheel files found in ${DIST_DIR}. Run \"uv build\" to generate one."
-
-    PAV_VERSION="$(ls "${DIST_DIR}"/pav3-*.whl | sort -V | tail -1 | sed -E 's/.*pav3-(.*)-py3.*/\1/')"
-
-    # The newest wheel must match the in-tree version, otherwise the wheel is
-    # stale relative to the source.
+    # Default to the in-tree version. Do not pick the newest wheel in dist:
+    # "sort -V" orders a final release before its dev releases (3.0.0 before
+    # 3.0.0.dev28), the reverse of PEP 440.
     INIT_FILE="${PAV_DIR}/src/pav3/__init__.py"
-    SRC_VERSION="$(sed -nE "s/^__version__[[:space:]]*=[[:space:]]*['\"]([^'\"]+)['\"].*/\1/p" "$INIT_FILE" 2>/dev/null || true)"
+    PAV_VERSION="$(sed -nE "s/^__version__[[:space:]]*=[[:space:]]*['\"]([^'\"]+)['\"].*/\1/p" "$INIT_FILE" 2>/dev/null || true)"
 
-    if [[ "$PAV_VERSION" != "$SRC_VERSION" ]]; then
-        err "Latest wheel version (${PAV_VERSION}) does not match the source version (${SRC_VERSION:-not found}) in ${INIT_FILE}. Run \"uv build\" to build the latest wheel, or set the version explicitly with \"-p <version>\" to bypass this check."
-    fi
-else
-    # Verify the requested version has a wheel.
-    WHEEL_PATH="${DIST_DIR}/pav3-${PAV_VERSION}-py3-none-any.whl"
-    [[ -f "$WHEEL_PATH" ]] \
-        || err "No wheel file found for PAV version ${PAV_VERSION}. Expected: ${WHEEL_PATH}"
+    [[ -n "$PAV_VERSION" ]] \
+        || err "Could not read __version__ from ${INIT_FILE}. Set the version with \"-p <version>\"."
 fi
+
+# Verify the version has a wheel.
+WHEEL_PATH="${DIST_DIR}/pav3-${PAV_VERSION}-py3-none-any.whl"
+[[ -f "$WHEEL_PATH" ]] \
+    || err "No wheel file found for PAV version ${PAV_VERSION}. Expected: ${WHEEL_PATH}. Run \"uv build\" to build the wheel from the source tree."
 
 IMAGE_TOOLS="pav3_tools:${PAV_VERSION}"
 IMAGE_PAV="pav3:${PAV_VERSION}"

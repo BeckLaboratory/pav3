@@ -25,7 +25,7 @@
 #   -d, --dir DIR          PAV directory (resolved relative to CWD). Overrides
 #                          the location auto-detected from this script.
 #   -p, --pav-version VER  PAV version to push (e.g. 3.0.0.dev22). Defaults to
-#                          the newest wheel in <PAV_DIR>/dist.
+#                          __version__ in <PAV_DIR>/src/pav3/__init__.py.
 #   -r, --repo REPO        Destination repository. Default: the GHCR repository
 #                          below. Useful for rehearsing a push against a
 #                          personal namespace (e.g. ghcr.io/<user>/pav3-test).
@@ -163,29 +163,16 @@ else
         || err "Could not resolve PAV directory from script location: ${SCRIPT_DIR}"
 fi
 
-DIST_DIR="${PAV_DIR}/dist"
-
 
 ### Determine the PAV version ###
 
 if [[ -z "$PAV_VERSION" ]]; then
-    # Auto-detect the newest wheel (same logic as files/container/build_docker).
-    shopt -s nullglob
-    wheels=("${DIST_DIR}"/pav3-*.whl)
-    shopt -u nullglob
-
-    [[ ${#wheels[@]} -gt 0 ]] \
-        || err "No PAV wheel files found in ${DIST_DIR}. Run \"uv build\" to generate one, or set the version with \"-p <version>\"."
-
-    PAV_VERSION="$(ls "${DIST_DIR}"/pav3-*.whl | sort -V | tail -1 | sed -E 's/.*pav3-(.*)-py3.*/\1/')"
-
-    # Warn (non-fatal) if the newest wheel does not match the in-tree version.
+    # Default to the in-tree version (same logic as files/container/build_docker).
     INIT_FILE="${PAV_DIR}/src/pav3/__init__.py"
-    SRC_VERSION="$(sed -nE "s/^__version__[[:space:]]*=[[:space:]]*['\"]([^'\"]+)['\"].*/\1/p" "$INIT_FILE" 2>/dev/null || true)"
+    PAV_VERSION="$(sed -nE "s/^__version__[[:space:]]*=[[:space:]]*['\"]([^'\"]+)['\"].*/\1/p" "$INIT_FILE" 2>/dev/null || true)"
 
-    if [[ "$PAV_VERSION" != "$SRC_VERSION" ]]; then
-        warn "Latest wheel version (${PAV_VERSION}) does not match the source version (${SRC_VERSION:-not found}) in ${INIT_FILE}. Pushing pav3:${PAV_VERSION}; run \"uv build\" or set \"-p <version>\" if this is unexpected."
-    fi
+    [[ -n "$PAV_VERSION" ]] \
+        || err "Could not read __version__ from ${INIT_FILE}. Set the version with \"-p <version>\"."
 fi
 
 LOCAL_IMAGE="pav3:${PAV_VERSION}"
