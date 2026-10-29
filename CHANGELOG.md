@@ -59,6 +59,14 @@ _First stable release of PAV 3, listing changes since the last prerelease (3.0.0
   `INFO/SUBTYPE`.
 - **Breaking:** Replaced VCF `INFO/HOMREF` and `INFO/HOMQRY` with the reserved `INFO/HOMLEN`, summing upstream and
   downstream homology from reference breakpoints for `DEL` and `DUP` and query breakpoints for `INS` and `CPX`.
+- **Breaking:** Workflow targets are renamed for the output they build: `pav_all` to `vcf` (still the default),
+  `align_all` to `align`, `call_tables_all` to `call_tables`, `call_tables_hap_all` to `call_tables_hap`,
+  `tracks_all` to `tracks`, and `tracks_align_all` to `tracks_align`. The rules previously named `call_tables`,
+  `call_tables_callable`, and `tracks_align` are renamed `call_merge_haps`, `call_callable`, and
+  `tracks_align_trim`, so Snakemake profiles setting resources for them need the new names.
+- **Breaking:** The assembly table is the first of `assemblies.csv`, `assemblies.xlsx`, and `assemblies.tsv` found
+  in the run directory (previously `assemblies.tsv`, then `assemblies.xlsx`). A run directory with more than one of
+  these files may read a different table.
 - Tighter compliance with VCF 4.5.
 - Complex variant tables have new columns `seq_ref_pos` and `seq_ref_end`, the reference region the variant
   sequence replaces.
@@ -76,8 +84,9 @@ _First stable release of PAV 3, listing changes since the last prerelease (3.0.0
 - Variant tracks report `.` for strand. The strand column was never set, and a variant carries no orientation of
   the reference feature it is drawn on.
 - The multi-allelic record summary is printed only with `verbose`, and its statistics are not computed otherwise.
-- The README cites the PAV 3 preprint (https://doi.org/10.1101/2024.12.19.629504) and is reorganized into install,
-  configuration, run, and output sections.
+- `pav3 --help` directs users to `batch` and lists `call` as deprecated.
+- The README cites the PAV 3 preprint (https://doi.org/10.1101/2024.12.19.629504), is reorganized into install,
+  configuration, run, and output sections, and documents the workflow targets and the other `pav3` subcommands.
 
 ### Added
 - YAML configuration file `pav.yaml` (or `pav.yml`), accepting the same parameters as `pav.json`. PAV reads
@@ -97,12 +106,16 @@ _First stable release of PAV 3, listing changes since the last prerelease (3.0.0
   (default) disables it. The table is rewritten after every snapshot, so a job killed for exceeding its memory keeps
   its samples. Adjunct rules (tracks, alignment depth) are not logged.
 - Runtime dependencies PyYAML, for `pav.yaml`, and psutil, for `perf_log`.
+- Workflow targets `callable`, the callable regions of each haplotype, and `tracks_var`, the variant tracks of each
+  haplotype.
 
 ### Removed
 - **Breaking:** Snakemake `benchmark` directives (`log/benchmark/`), replaced by `perf_log`.
 - **Breaking:** VCF `INFO/SVTYPE`. VCF 4.5 deprecates it as redundant with ALT, which carries the type in the
   symbolic allele or in the REF and ALT lengths.
 - The `##FILTER=<ID=PASS>` header. VCF defines PASS implicitly.
+- Workflow target `align_export_all`. It always failed in PAV 3, which does not yet implement the alignment export
+  rule it requires.
 
 ### Fixed
 - Alignment trimming truncated the passing alignment instead of the filtered one where a passing and a filtered
@@ -169,6 +182,7 @@ _First stable release of PAV 3, listing changes since the last prerelease (3.0.0
   quote was wrapped in quotes. An empty INFO column is now `.`.
 - With `vcf_haplotypes`, variants carried only by haplotypes left out of the VCF were written with no haplotype
   carrying the ALT allele (e.g. `0|0`).
+- `pav3 license` without a format argument failed instead of printing the brief license.
 
 ## 3.0.0.dev26 - 2026-08-28
 

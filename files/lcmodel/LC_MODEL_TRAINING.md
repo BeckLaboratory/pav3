@@ -6,7 +6,7 @@ Code and definitions in this directory are used to train models to recognize low
 ## Input data
 
 Input requirements:
-* One or more PAV run directories executed at least up to alignment tables (PAV target `align_all`).
+* One or more PAV run directories executed at least up to alignment tables (PAV target `align`).
 * A definition describing how the model should be trained.
 
 

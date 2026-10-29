@@ -29,6 +29,33 @@ global temp
 # Rules
 #
 
+# Variant call tables
+localrules: call_tables
+
+rule call_tables:
+    input:
+        pq_merge=lambda wildcards: pav3.pipeline.expand_pattern(
+            'results/{asm_name}/call/call_{vartype}.parquet',
+            ASM_TABLE, PAV_CONFIG,
+            vartype=('insdel', 'inv', 'snv', 'cpx', 'dup')
+        ),
+
+
+# Tables of callable regions
+localrules: callable
+
+rule callable:
+    input:
+        callable_ref=lambda wildcards: pav3.pipeline.expand_pattern(
+            'results/{asm_name}/call_hap/callable_ref_{hap}.parquet',
+            ASM_TABLE, PAV_CONFIG,
+        ),
+        callable_qry=lambda wildcards: pav3.pipeline.expand_pattern(
+            'results/{asm_name}/call_hap/callable_qry_{hap}.parquet',
+            ASM_TABLE, PAV_CONFIG,
+        ),
+
+
 # Generate the VCF
 rule call_vcf:
     input:
@@ -238,7 +265,8 @@ rule call_vcf:
             pysam.bcftools.index('--csi', output.vcf)
 
 
-rule call_tables_callable:
+# Callable regions in reference and query coordinates
+rule call_callable:
     input:
         align_qryref='results/{asm_name}/align/{hap}/align_trim-qryref.parquet',
         inter_insdel='temp/{asm_name}/call_hap/inter_insdel_{hap}.parquet',
@@ -294,20 +322,8 @@ rule call_tables_callable:
             )
 
 
-# Merge all samples and variant types
-localrules: call_tables_all
-
-rule call_tables_all:
-    input:
-        pq_merge=lambda wildcards: pav3.pipeline.expand_pattern(
-            'results/{asm_name}/call/call_{vartype}.parquet',
-            ASM_TABLE, PAV_CONFIG,
-            vartype=('insdel', 'inv', 'snv', 'cpx', 'dup')
-        )
-
-
 # Merge one sample and variant type
-rule call_tables:
+rule call_merge_haps:
     input:
         pq_inter=lambda wildcards: pav3.pipeline.expand_pattern(
             'results/{asm_name}/call_hap/call_{vartype}_{hap}.parquet',
@@ -354,10 +370,10 @@ rule call_tables:
             )
 
 
-# Merge all samples and variant types
-localrules: call_tables_hap_all
+# Variant call tables per haplotype
+localrules: call_tables_hap
 
-rule call_tables_hap_all:
+rule call_tables_hap:
     input:
         pq_merge=lambda wildcards: pav3.pipeline.expand_pattern(
             'results/{asm_name}/call_hap/call_{vartype}_{hap}.parquet',

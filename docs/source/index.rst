@@ -45,7 +45,7 @@ Configuration
 -------------
 
 ``pav3 batch`` reads a configuration file (``pav.yaml`` or ``pav.json``) and a table of assemblies
-(``assemblies.tsv``). For details about setting these up, along with guidance on choosing a
+(``assemblies.csv``, ``assemblies.xlsx``, or ``assemblies.tsv``). For details about setting these up, along with guidance on choosing a
 reference and a description of the output, see the
 `README <https://github.com/BeckLaboratory/pav3/blob/main/README.md>`_ in the PAV repository.
 

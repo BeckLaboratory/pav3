@@ -4,7 +4,7 @@ from __future__ import annotations
 import pytest
 
 from pav3.params import PavParams
-from pav3.pipeline import get_pav_config_path, read_pav_config
+from pav3.pipeline import get_pav_asm_table_path, get_pav_config_path, read_pav_config
 
 CONFIG_JSON = """{
   "reference": "/path/to/hg38.no_alt.fa.gz",
@@ -105,3 +105,33 @@ def test_read_config_invalid(tmp_path, filename, content):
 
     with pytest.raises(ValueError, match=filename):
         read_pav_config(path)
+
+
+@pytest.mark.parametrize(
+    'present, expected',
+    [
+        (['assemblies.csv', 'assemblies.xlsx', 'assemblies.tsv'], 'assemblies.csv'),
+        (['assemblies.xlsx', 'assemblies.tsv'], 'assemblies.xlsx'),
+        (['assemblies.tsv'], 'assemblies.tsv'),
+    ]
+)
+def test_asm_table_path_order(tmp_path, present, expected):
+    """Default assembly tables are searched in order: CSV, Excel, then TSV."""
+    for filename in present:
+        (tmp_path / filename).write_text('')
+
+    assert get_pav_asm_table_path(root_path=tmp_path) == tmp_path / expected
+
+
+def test_asm_table_path_config(tmp_path):
+    """An assembly table set in the configuration is used over the defaults."""
+    (tmp_path / 'assemblies.csv').write_text('')
+    (tmp_path / 'samples.parquet').write_text('')
+
+    assert get_pav_asm_table_path({'assembly_table': 'samples.parquet'}, tmp_path) == tmp_path / 'samples.parquet'
+
+
+def test_asm_table_path_missing(tmp_path):
+    """Without an assembly table, the error names each default path."""
+    with pytest.raises(FileNotFoundError, match='assemblies.csv.*assemblies.xlsx.*assemblies.tsv'):
+        get_pav_asm_table_path(root_path=tmp_path)

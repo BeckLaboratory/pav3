@@ -1138,8 +1138,9 @@ def get_pav_asm_table_path(
     """Get a path to the assembly table.
 
     The assembly table path is read from the PAV configuration if it is specified there. If it is
-    not specified in the configuration, the default assembly table paths are searched. All paths
-    are relative to `root_path` (defaults to the current directory).
+    not specified in the configuration, the default assembly table paths are searched in order
+    ("assemblies.csv", "assemblies.xlsx", then "assemblies.tsv") and the first one found is used.
+    All paths are relative to `root_path` (defaults to the current directory).
 
     :param pav_config: PAV configuration, if specified. Reads the assembly table path from the
         configuration if it is specified there.
@@ -1169,8 +1170,9 @@ def get_pav_asm_table_path(
         return asm_table_path
 
     default_paths = [
-        root_path / 'assemblies.tsv',
+        root_path / 'assemblies.csv',
         root_path / 'assemblies.xlsx',
+        root_path / 'assemblies.tsv',
     ]
 
     for asm_table_path in default_paths:

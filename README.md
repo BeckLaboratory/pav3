@@ -9,11 +9,11 @@ Variant caller for assembled genomes.
 
 ## Install
 
-PAV can be run from a container or integrated into a Python or conda environment.
+PAV runs from a container or from a Python environment.
 
 ### Containers
 
-Public container images include PAV and all dependencies.
+Public container images include PAV and all of its dependencies.
 
 Docker:
 
@@ -32,170 +32,202 @@ apptainer pull pav3.sif oras://ghcr.io/becklaboratory/pav3-sif:latest
 apptainer run pav3.sif batch
 ```
 
-The container runs `pav3` itself, so arguments follow the image exactly as they would on the command line (`batch`, `--help`, and so on).
+The container runs `pav3`, so arguments after the image are the same as on the command line (`batch`, `--help`, and
+so on).
 
-Both examples give PAV access to the current directory only. If the reference genome or the assemblies are somewhere
-else, add `-v /path:/path` for Docker or `--bind /path` for Apptainer
-and change "/path" to the actual path on the host machine.
+Both examples give PAV access to the current directory only. If the reference or the assemblies are in another
+directory, add `-v /path:/path` (Docker) or `--bind /path` (Apptainer), replacing `/path` with that directory.
 
-Replace `latest` with a version (e.g. `3.0.0.dev24`) to pin a specific release.
-
+Replace `latest` with a version (e.g. `3.0.0`) to pin a release.
 
 ### Install locally
-
-Alternatively, PAV can be installed directly from PyPI into existing Python or conda environments without requiring a container.
 
 ```bash
 pip install pav3
 ```
 
-Python 3.12 or newer is required. See [Dependencies](#dependencies) below.
-
-`minimap2` will need to be available in the environment where PAV is run.
+PAV requires Python 3.12 or newer and `minimap2` in the `PATH`. The `tracks` targets also require `bedToBigBed`
+([UCSC executable downloads](https://hgdownload.soe.ucsc.edu/admin/exe/)). The containers include both. All other
+dependencies are Python packages installed with PAV.
 
 
 ## Configuration
 
-PAV currenly supports batch processing of assemblies (`pav batch` command). A configuration file and a table of assemlbies are needed.
+PAV runs in a directory with a configuration file (`pav.yaml`) and an assembly table (`assemblies.csv`), and writes
+its output to the same directory.
 
 ### Configuration file
 
-A YAML configuration file, `pav.yaml`, configures PAV. Default options are built-in, and the only required option is
-`reference` pointing to a reference FASTA file.
+`pav.yaml` sets PAV options. The only required option is `reference`, the path to the reference FASTA file. All other
+options have defaults.
 
-Example:
-
-```
+```yaml
 reference: /path/to/hg38.no_alt.fa.gz
 ```
 
-Older versions read `pav.json`, which PAV will read if no `pav.yaml` file is found. If both are present, a warning is
-printed and `pav.yaml` is used.
+PAV also reads `pav.yml`, or `pav.json` if no YAML file exists. If both a YAML and a JSON file exist, PAV prints a
+warning and uses the YAML file. `pav3 batch --config FILE` reads the configuration from another path.
+
+### Reference genome
+
+Use a primary assembly of chromosome scaffolds, including unplaced and unlocalized contigs if it has them (GRCh/hg
+references). Do not use references with ALT, PATCH, or decoy scaffolds. The redundant sequence in these contigs may
+increase callset errors.
+
+Suitable references:
+* GRCh38 no-ALT reference shared by the HGSVC:
+  https://ftp.1000genomes.ebi.ac.uk/vol1/ftp/data_collections/HGSVC2/technical/reference/20200513_hg38_NoALT/
+* T2T-CHM13v2.0 (UCSC hs1), unaltered.
 
 ### Assembly table
 
-The assembly table points to input assemblies. It may be in TSV, CSV, Excel, or parquet formats (TSV and CSV may
-optionally be gzipped). Each assembly has one row in the table.
+The assembly table lists the input assemblies, one row per assembly. PAV uses the first of these files it finds in
+the run directory:
+
+1. `assemblies.csv`
+2. `assemblies.xlsx`
+3. `assemblies.tsv`
+
+To use another file, set its path with the `assembly_table` option in `pav.yaml`. It may be CSV, Excel, TSV, or
+Parquet, and CSV and TSV files may be gzipped.
 
 Columns:
-* name: Assembly or sample name.
-* hap_\*: One column for each assembled haplotype.
+* `name`: Assembly or sample name.
+* `hap_*`: One column per haplotype, named for the haplotype (e.g. `hap_h1` or `hap_mat`).
+* `config` (optional): Configuration options for this assembly (see
+  [Per-assembly configuration](#per-assembly-configuration)).
 
-For example, a table with two haplotypes might look like:
+Example with two haplotypes:
 
 | name    | hap_h1                   | hap_h2                   |
 |---------|--------------------------|--------------------------|
 | sample1 | /path/to/sample1_hap1.fa | /path/to/sample1_hap2.fa |
 | sample2 | /path/to/sample2_hap1.fa | /path/to/sample2_hap2.fa |
 
-Haplotype names can be anything, such as "pat" and "mat" (columns `hap_pat` and `hap_mat`). Haplotype names do not change how input is handled.
+Haplotype names are labels and do not change how input is processed. An assembly may have any number of haplotypes,
+and a blank entry means the assembly does not have that haplotype. Each VCF genotype has one allele per haplotype with
+an input path, in table column order. With the table above, `0|1` means the variant is in `h2` but not `h1`.
 
-The output VCF will have one allele per defined haplotype in the order they are defined in the table. Using the above table, "0|1" means the the variant is in "h2", but not "h1". Missing haplotypes are acceptable and blank entries are ignored. Expected ploidy per sample is the number of haplotypes with defined paths. Any number of haplotypes may be input for each sample.
+### Haplotype input formats
+
+Each `hap_*` entry is a path to a FASTA, FASTQ, GFA, or FOFN (file of file names) file. Separate multiple files with
+semicolons (e.g. `file1.fa.gz;file2.fa.gz`); file types may be mixed. A FOFN may list files of any of these types,
+including other FOFNs (nesting is not recommended, but cycles are detected and broken).
+
+PAV is fastest with a single indexed FASTA file, uncompressed or bgzipped. For any other input, PAV first writes and
+indexes a FASTA file for the haplotype, which adds to the run time.
+
+### Per-assembly configuration
+
+The optional `config` column sets options for one assembly, overriding `pav.yaml` and PAV defaults. It holds
+semicolon-separated `key=value` pairs (e.g. `min_mapq=30;lc_model=default`). `reference` can only be set in
+`pav.yaml`.
 
 
 ## Run
 
-To run PAV:
+From the directory with `pav.yaml` and the assembly table:
 
 ```bash
 pav3 batch
 ```
 
-Some Python environments may require you to run `pav3` through the `python` command:
+If the `pav3` command is not on the `PATH`, run `python -m pav3 batch`.
 
-```bash
-python -m pav3 batch
-```
+Use `-c N` to limit PAV to N cores, `-n` for a dry run, and `--profile DIR` to pass a Snakemake profile (e.g. for
+cluster execution). `pav3 batch --help` lists all options.
+
 
 ## Output
-PAV will output a VCF file `NAME.vcf.gz` to the run directory for each sample.
 
-* `results/NAME/call_hap`: Unmerged variant calls.
-  * Includes tables of callable regions in reference ("callable_ref") and query ("callable_qry") coordinates.
-* `results/NAME/call`: Variant calls merged across haplotypes.
+For each assembly `NAME`:
+* `NAME.vcf.gz`: Variant calls, indexed (`NAME.vcf.gz.csi`).
+* `results/NAME/call/`: Variant tables merged across haplotypes.
+* `results/NAME/call_hap/`: Variant tables for each haplotype, and callable regions in reference (`callable_ref`)
+  and assembly (`callable_qry`) coordinates.
+* `results/NAME/align/`: Alignment tables.
 
-All tables are in parquet format.
-
-## Additional information
-
-### Dependencies
-
-Currently, PAV needs `minimap2` in the environment where it is run (the containers above already include it). This may
-change in future releases.
-
-Optionally, PAV can build UCSC tracks, which requires `bedToBigBed` in the environment (see [UCSC executable downloads](http://hgdownload.soe.ucsc.edu/admin/exe/)).
-
-All other dependencies are PyPI packages and are installed automatically with `pav3`.
-
-unique value.
+Tables are in Parquet format (`pav3 maketable` converts them to BED, CSV, TSV, or Excel).
 
 
-#### Haplotype input formats
+## Targets
 
-Each "hap_" column contains paths to input files in FASTA, FASTQ, GFA, or FOFN format. FOFN may contain paths to these
-same file types including other FOFNs (recursive FOFNs are not recommended, although cycles are detected and broken). Multiple files
-can be input by separating them by semi-colons (i.e. "path/to/file1.fasta.gz;path/to/file2.fasta.gz") and a mix of
-file types is possible.
+`pav3 batch` builds the VCF for every assembly. To build other outputs or stop at an earlier step, name a target:
 
-PAV will be fastest if the input is a single indexed FASTA file, which may be plain text or bgzipped (Samtools bgzip).
-For all other input including multiple FASTA files or any GFA files for one haplotype, PAV will build a single FASTA
-file from the input and index it, which adds to run time.
+```bash
+pav3 batch tracks
+```
+
+* `vcf` (default): VCF for each assembly (`NAME.vcf.gz`).
+* `call_tables`: Variant tables merged across haplotypes (`results/NAME/call/`). Stops before writing the VCF.
+* `call_tables_hap`: Variant tables for each haplotype (`results/NAME/call_hap/`). Stops before merging haplotypes.
+* `callable`: Callable regions for each haplotype in reference and assembly coordinates
+  (`results/NAME/call_hap/callable_*`).
+* `align`: Alignment tables (`results/NAME/align/`). Stops before calling variants.
+* `data_init`: Reference files shared by all assemblies (`data/ref/`).
+* `tracks`: All UCSC tracks (`tracks_var` and `tracks_align`). Requires `bedToBigBed`.
+* `tracks_var`: Variant tracks for each haplotype (`tracks/call_hap/`).
+* `tracks_align`: Alignment tracks (`tracks/align/`).
+
+A target can also be an output file. To run each assembly as an independent job, run `data_init` once, then run one
+job per assembly in the same directory. These jobs can run at the same time without locking each other:
+
+```bash
+pav3 batch data_init
+
+pav3 batch sample1.vcf.gz
+pav3 batch sample2.vcf.gz
+```
+
+Without `data_init` first, each job tries to build the shared reference files, and Snakemake stops the later jobs
+with a "Directory cannot be locked" error.
 
 
-#### Configuration column for global overrides
+## Other commands
 
-An optional "config" column in the assembly table can override global configuration parameters per assembly. Global configuration parameters
-are defined in `pav.yaml` or are PAV default values if not defined. Values in this column are semicolon-separated lists
-of key-value pairs (i.e. "key1=val1;key2=val2"). The "reference" parameter can only be set in `pav.yaml`.
+* `pav3 lift`: Lift regions from reference to assembly coordinates, or from assembly to reference coordinates with
+  `-r`. Uses the alignments in a PAV run directory (`-d`, default: the current directory; requires the `align`
+  target) or a SAM, BAM, or CRAM file (`-a`).
+* `pav3 subseq`: Lift regions as `pav3 lift` does and output their sequences: assembly sequences by default, or
+  reference sequences with `-r`.
+* `pav3 maketable`: Convert a PAV Parquet table to BED, CSV, TSV, or Excel.
+* `pav3 license`: Print the PAV license (`brief`, `full`, or `spdx`).
+* `pav3 call`: Deprecated. Prints a warning and runs `pav3 batch`.
 
-
-## Suitable genome references
-
-Align against primary assemblies composed of chromosome scaffolds including unplaced contigs and unlocalized contigs
-if they exist (GRCh/hg references). Do not use references with ALT, PATCH, or DECOY scaffolds; reference redundancy
-from these non-primary contigs may increase callset errors.
-
-The GRCh38 HGSVC no-ALT reference for long reads was shared by the HGSVC consortium:
-https://ftp.1000genomes.ebi.ac.uk/vol1/ftp/data_collections/HGSVC2/technical/reference/20200513_hg38_NoALT/
-
-The T2T-CHM13v2.0 (hs1 on UCSC) is suitable without alteration.
+Run `pav3 COMMAND --help` for the options of each command.
 
 
 ## PAV versions
 
-PAV uses Python package versioning with three fields:
+PAV follows Python's packaging version scheme (https://packaging.python.org/en/latest/discussions/versioning/) with
+three fields:
 
-- Major: Major changes or new features.
-- Minor: Small changes, but may affect PAV's API or command-line interfaces.
-- Patch: Small changes and minor new features. Patch should do not break API or command-line compatibility, but may
-  add new features or fix bugs that alter results.
+- Major: Large changes or new features.
+- Minor: Small changes that may affect the PAV API or command-line interface.
+- Patch: Bug fixes and small features. Patch releases do not break API or command-line compatibility, but may change
+  results.
 
-PAV follows Python's packaging versioning scheme (https://packaging.python.org/en/latest/discussions/versioning/).
-
-PAV may use pre-release versions with a suffix for development releases (".devN"), alpha ("aN"), beta ("bN"), or
-release-candidate ("rcN") where "N" is an integer greater than 0. For example, "3.0.0.dev1" is a pre-3.0.0 development version.
+Pre-release versions have a suffix: development (".devN"), alpha ("aN"), beta ("bN"), or release candidate ("rcN"),
+where "N" is an integer greater than 0. For example, "3.0.0.dev1" is a development version before 3.0.0.
 
 
 ## Reporting bugs
 
-Please report problems you encounter on the
-[issues page](https://github.com/BeckLaboratory/pav3/issues).
+Please report problems on the [issues page](https://github.com/BeckLaboratory/pav3/issues).
 
-Thank you for your bug reports and feedback, it really does help improve PAV!
+Thank you for your bug reports and feedback. They really do help improve PAV!
 
 
 ## Cite PAV
 
-PAV 3 can be cited using the bioRxiv preprint:
-
-[https://www.biorxiv.org/content/10.1101/2024.12.19.629504v1](https://www.biorxiv.org/content/10.1101/2024.12.19.629504v1).
+Cite PAV 3 with the bioRxiv preprint:
 
 > Peter Audano, Carolyn Paisie, The Human Genome Structural Variation Consortium (HGSVC), and Christine Beck. 2024. “Large Complex Structural Rearrangements in Human Genomes Harbor Cryptic Structures.” In bioRxiv. December 22. https://doi.org/10.1101/2024.12.19.629504.
 
 
 ### PAV 1 & 2
 
-Earlier versions of PAV can be cited as:
+Cite earlier versions of PAV as:
 
 > Ebert et al., “Haplotype-Resolved Diverse Human Genomes and Integrated Analysis of Structural Variation,”
 > Science, February 25, 2021, eabf7117, https://doi.org/10.1126/science.abf7117 (PMID: 33632895).

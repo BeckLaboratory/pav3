@@ -133,8 +133,8 @@ def _add_subparser_call(
 
     parser_call = subparsers.add_parser(
         'call',
-        description='Call variants from assemblies',
-        help='Call variants.'
+        description='Deprecated: use "batch". Prints a warning and runs "batch".',
+        help='Deprecated: use "batch".'
     )
 
     _add_opt_version(parser_call)

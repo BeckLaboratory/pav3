@@ -11,9 +11,9 @@ global ASM_TABLE
 global PAV_CONFIG
 
 
-localrules: tracks_all
+localrules: tracks
 
-rule tracks_all:
+rule tracks:
     input:
         align=lambda wildcards: pav3.pipeline.expand_pattern(
             'tracks/align/trim_qryref/tracks_align_{asm_name}_trim-qryref.bb',
@@ -27,7 +27,6 @@ rule tracks_all:
         call_snv=lambda wildcards: pav3.pipeline.expand_pattern(
             'tracks/call_hap/tracks_call_hap_{asm_name}_{hap}_snv_snv.bb',
             ASM_TABLE, PAV_CONFIG,
-            varclass=('sv', 'indel')
         ),
         call_invdupcpx=lambda wildcards: pav3.pipeline.expand_pattern(
             'tracks/call_hap/tracks_call_hap_{asm_name}_{hap}_sv_invdupcpx.bb',
@@ -38,6 +37,24 @@ rule tracks_all:
 #
 # Variant tracks
 #
+
+localrules: tracks_var
+
+rule tracks_var:
+    input:
+        insdel=lambda wildcards: pav3.pipeline.expand_pattern(
+            'tracks/call_hap/tracks_call_hap_{asm_name}_{hap}_{varclass}_insdel.bb',
+            ASM_TABLE, PAV_CONFIG,
+            varclass=('sv', 'indel')
+        ),
+        snv=lambda wildcards: pav3.pipeline.expand_pattern(
+            'tracks/call_hap/tracks_call_hap_{asm_name}_{hap}_snv_snv.bb',
+            ASM_TABLE, PAV_CONFIG,
+        ),
+        invdupcpx=lambda wildcards: pav3.pipeline.expand_pattern(
+            'tracks/call_hap/tracks_call_hap_{asm_name}_{hap}_sv_invdupcpx.bb',
+            ASM_TABLE, PAV_CONFIG,
+        ),
 
 rule tracks_var_invdupcpx:
     input:
@@ -135,16 +152,16 @@ rule tracks_var_insdel_snv:
 # Alignment tracks
 #
 
-localrules: tracks_align_all
+localrules: tracks_align
 
-rule tracks_align_all:
+rule tracks_align:
     input:
         bb=lambda wildcards: pav3.pipeline.expand_pattern(
             'tracks/align/trim_qryref/tracks_align_{asm_name}_trim-qryref.bb',
             ASM_TABLE, PAV_CONFIG,
         ),
 
-rule tracks_align:
+rule tracks_align_trim:
     input:
         pq=lambda wildcards: pav3.pipeline.expand_pattern(
             'results/{asm_name}/align/{hap}/align_trim-{trim}.parquet',

@@ -49,13 +49,13 @@ wildcard_constraints:
 
 ### Default rule ###
 
-# all
+# vcf
 #
-# Make all files for all samples.
+# Make VCFs for all samples.
 
-localrules: pav_all
+localrules: vcf
 
-rule pav_all:
+rule vcf:
     input:
         vcf=lambda wildcards: pav3.pipeline.expand_pattern(
             '{asm_name}.vcf.gz',

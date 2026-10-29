@@ -63,11 +63,11 @@ def align_index_files(
 #
 
 # Run all alignments
-localrules: align_all
+localrules: align
 
-rule align_all:
+rule align:
     input:
-        align_trim_none=lambda wildcards: pav3.pipeline.expand_pattern(
+        align=lambda wildcards: pav3.pipeline.expand_pattern(
             'results/{asm_name}/align/{hap}/align_trim-qryref.parquet', ASM_TABLE, PAV_CONFIG
         )
 
@@ -294,12 +294,12 @@ def _align_export_all(wildcards):
         asm_name=asm_set, hap=hap_set, trim=trim_set, ext=ext_set
     )
 
-# Export alignments
-localrules: align_export_all
-
-rule align_export_all:
-    input:
-        cram=_align_export_all
+# # Export alignments
+# localrules: align_export_all
+#
+# rule align_export_all:
+#     input:
+#         cram=_align_export_all
 
 
 # # Reconstruct CRAM from alignment BED files after trimming redundantly mapped bases (post-cut).

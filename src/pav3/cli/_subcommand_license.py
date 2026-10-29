@@ -24,7 +24,7 @@ def subcommand_license(
     elif out_format == 'spdx':
         print(__license_spdx__)
     else:
-        raise ValueError(f'Unknown license format: {format}')
+        raise ValueError(f'Unknown license format: {out_format}')
 
     return 0
 
@@ -47,9 +47,10 @@ def _add_subparser_license(
         'out_format',
         metavar='out_format',  # Do not shadow "format" builtin in subcommand routine
         type=str,
+        nargs='?',
         choices=['brief', 'full', 'spdx'],
         default='brief',
-        help='License output format.',
+        help='License output format (default: brief).',
     )
 
     return parser_license

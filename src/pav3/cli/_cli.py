@@ -31,7 +31,7 @@ def build_parser() -> argparse.ArgumentParser:
         description='PAV assembly-based variant caller',
         epilog=(
             'The PAV subcommand must be first followed by options and arguments. '
-            'Use subcommand "call" to call variants.'
+            'Use subcommand "batch" to call variants.'
         ),
     )
 

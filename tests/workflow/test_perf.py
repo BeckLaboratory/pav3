@@ -61,7 +61,10 @@ def test_perf_log_interval_asm_override():
             'call_intra_snv_insdel', {'asm_name': 'HG00171', 'hap': 'h1'},
             'log/perf/HG00171/call_intra_snv_insdel_h1.parquet'
         ),
-        ('call_tables', {'asm_name': 'HG00171', 'vartype': 'insdel'}, 'log/perf/HG00171/call_tables_insdel.parquet'),
+        (
+            'call_merge_haps', {'asm_name': 'HG00171', 'vartype': 'insdel'},
+            'log/perf/HG00171/call_merge_haps_insdel.parquet'
+        ),
         ('call_vcf', {'asm_name': 'HG00171'}, 'log/perf/HG00171/call_vcf.parquet'),
         ('data_ref_fofn', {}, 'log/perf/data_ref_fofn.parquet'),
     ]
