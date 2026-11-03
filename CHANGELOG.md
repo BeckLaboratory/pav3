@@ -22,6 +22,13 @@ https://common-changelog.org/
 
 -->
 
+## 3.0.1 - 2026-11-03
+
+Updating dependencies
+
+### Changed
+- Updated to agglovar release 1.0.0
+
 ## 3.0.0 - 2026-10-28
 
 _First stable release of PAV 3, listing changes since the last prerelease (3.0.0.dev26)._
