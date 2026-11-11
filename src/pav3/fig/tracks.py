@@ -37,6 +37,9 @@ MG_STAT_FIELDS: tuple[str, ...] = tuple(
 )
 """Merge statistic fields in the order they are formatted into the "mg_stat" track column."""
 
+AS_TABLE_NAME_PATTERN = r'[^A-Za-z0-9_]'
+"""Characters stripped from AutoSQL table names, which "bedToBigBed" parses as a single identifier."""
+
 CONTROL_CHAR_PATTERN = r'[\x00-\x1f\x7f]'
 """Control characters (including tab, newline, and carriage return) stripped from BED track fields."""
 
@@ -148,7 +151,7 @@ def call_hap_insdelsnv(
     vartype = (vartype if (vartype := callset_def.get('vartype', '').strip()) else 'unknown').lower()
     varclass = (varclass if (varclass := callset_def.get('varclass', '').strip()) else 'svindel').lower()
 
-    track_desc_short = f'PAVCallHap{asm_name}{hap}{varclass.capitalize()}{vartype.capitalize()}'
+    track_desc_short = _as_table_name(f'PAVCallHap{asm_name}{hap}{varclass.capitalize()}{vartype.capitalize()}')
     track_desc_long = f'PAV Call Hap ({asm_name}-{hap}: {VARCLASS_FMT[varclass]} {VARTYPE_FMT[vartype]})'
 
     df_as = _read_df_as(VAR_TRACK_TABLE_FILENAME, field_path)
@@ -255,7 +258,7 @@ def call_hap_invdupcpx(
     vartype = (vartype if (vartype := callset_def.get('vartype', '').strip()) else 'unknown').lower()
     varclass = (varclass if (varclass := callset_def.get('varclass', '').strip()) else 'invdupcpx').lower()
 
-    track_desc_short = f'PAVCallHap{asm_name}{hap}{varclass.capitalize()}{vartype.capitalize()}'
+    track_desc_short = _as_table_name(f'PAVCallHap{asm_name}{hap}{varclass.capitalize()}{vartype.capitalize()}')
     track_desc_long = f'PAV Call Hap ({asm_name}-{hap}: {VARCLASS_FMT[varclass]} {VARTYPE_FMT[vartype]})'
 
     df_as = _read_df_as(VAR_TRACK_TABLE_FILENAME, field_path)
@@ -784,6 +787,23 @@ def set_default_as_types(
         )
 
     return df
+
+
+def _as_table_name(
+        name: str,
+) -> str:
+    """Strip characters that are not allowed in an AutoSQL table name.
+
+    Variant track table names are built from the assembly and haplotype names, which may contain characters such as
+    "-" (e.g. "SAMPLE-01"). "bedToBigBed" reads the table name as a single identifier, stops at the first other
+    character, and fails with "Expecting ( got ..." on the remainder. The quoted long description is free text and
+    keeps the original names.
+
+    :param name: Table name.
+
+    :return: Table name with every character other than letters, digits, and underscores removed.
+    """
+    return re.sub(AS_TABLE_NAME_PATTERN, '', name)
 
 
 def _chrom_list(
